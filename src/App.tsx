@@ -368,6 +368,16 @@ export default function App() {
     }
   });
 
+  // Individual watched episodes tracking (synced with web format "animeId-episodeId")
+  const [watchedEpisodes, setWatchedEpisodes] = useState<string[]>(() => {
+    try {
+      const s = localStorage.getItem('animezona_watched_episodes') || localStorage.getItem('watchedEpisodes');
+      return s ? JSON.parse(s) : [];
+    } catch {
+      return [];
+    }
+  });
+
   // Custom User Lists
   const [customLists, setCustomLists] = useState<{ id: string; name: string; animeIds: (string | number)[] }[]>(() => {
     try {
@@ -492,6 +502,11 @@ export default function App() {
         if (cloudData.watchedAnimes && Array.isArray(cloudData.watchedAnimes)) {
           setWatchedAnimesList(cloudData.watchedAnimes);
           localStorage.setItem('watchedAnimes', JSON.stringify(cloudData.watchedAnimes));
+        }
+        if (cloudData.watchedEpisodes && Array.isArray(cloudData.watchedEpisodes)) {
+          setWatchedEpisodes(cloudData.watchedEpisodes);
+          localStorage.setItem('watchedEpisodes', JSON.stringify(cloudData.watchedEpisodes));
+          localStorage.setItem('animezona_watched_episodes', JSON.stringify(cloudData.watchedEpisodes));
         }
         if (cloudData.secretLikes && Array.isArray(cloudData.secretLikes)) {
           const cleanSecrets = cleanIdList(cloudData.secretLikes);
@@ -1016,6 +1031,50 @@ export default function App() {
     if (userId) syncService.saveUserKey(userId, 'watchedAnimes', wa);
   };
 
+  const saveWatchedEpisodes = (eps: string[]) => {
+    setWatchedEpisodes(eps);
+    localStorage.setItem('animezona_watched_episodes', JSON.stringify(eps));
+    localStorage.setItem('watchedEpisodes', JSON.stringify(eps));
+    if (userId) syncService.saveUserKey(userId, 'watchedEpisodes', eps);
+  };
+
+  const isEpisodeWatched = (animeId: string | number, epId?: number, epNum?: number) => {
+    const aId = String(animeId).trim();
+    const idKey = epId !== undefined ? `${aId}-${epId}` : null;
+    const numKey = epNum !== undefined ? `${aId}-${epNum}` : null;
+    return watchedEpisodes.some(
+      (w) => (idKey && w === idKey) || (numKey && w === numKey)
+    );
+  };
+
+  const toggleEpisodeWatched = (anime: MappedAnime, ep: MappedEpisode, e?: React.MouseEvent) => {
+    if (e) {
+      e.preventDefault();
+      e.stopPropagation();
+    }
+    const globalId = `${anime.id}-${ep.id || ep.episode_number}`;
+    const isWatched = isEpisodeWatched(anime.id, ep.id, ep.episode_number);
+    let newWatched: string[];
+    if (isWatched) {
+      newWatched = watchedEpisodes.filter(
+        (w) => w !== `${anime.id}-${ep.id}` && w !== `${anime.id}-${ep.episode_number}`
+      );
+      showToast(`Ep. ${ep.episode_number} marcado como no visto`);
+    } else {
+      newWatched = [globalId, ...watchedEpisodes.filter((w) => w !== globalId)];
+      showToast(`Ep. ${ep.episode_number} marcado como visto`);
+    }
+    saveWatchedEpisodes(newWatched);
+  };
+
+  const clearAnimeWatchedEpisodes = (animeId: string | number) => {
+    const prefix = `${String(animeId).trim()}-`;
+    const newWatched = watchedEpisodes.filter((id) => !id.startsWith(prefix));
+    saveWatchedEpisodes(newWatched);
+    removeContinueItem(animeId);
+    showToast('Episodios vistos limpiados para este anime');
+  };
+
   const saveCustomLists = (lists: typeof customLists) => {
     setCustomLists(lists);
     localStorage.setItem('animezona_custom_lists', JSON.stringify(lists));
@@ -1277,6 +1336,13 @@ export default function App() {
       saveWatchedAnimes(updatedWatched);
     }
 
+    // Auto mark played episode as watched
+    const epKey = `${anime.id}-${ep.id || ep.episode_number}`;
+    if (!watchedEpisodes.includes(epKey)) {
+      const updated = [epKey, ...watchedEpisodes];
+      saveWatchedEpisodes(updated);
+    }
+
     // Check if there was a saved time in continueWatching
     const saved = continueWatching.find((c) => String(c.animeId) === String(anime.id));
     if (saved && saved.episodeNum === ep.episode_number && saved.time > 15 && !autoPlayDirect) {
@@ -1508,6 +1574,11 @@ export default function App() {
             setWatchedAnimesList(cloudData.watchedAnimes);
             localStorage.setItem('watchedAnimes', JSON.stringify(cloudData.watchedAnimes));
           }
+          if (cloudData.watchedEpisodes && Array.isArray(cloudData.watchedEpisodes)) {
+            setWatchedEpisodes(cloudData.watchedEpisodes);
+            localStorage.setItem('watchedEpisodes', JSON.stringify(cloudData.watchedEpisodes));
+            localStorage.setItem('animezona_watched_episodes', JSON.stringify(cloudData.watchedEpisodes));
+          }
           if (cloudData.secretLikes && Array.isArray(cloudData.secretLikes)) {
             const cleanSecrets = cleanIdList(cloudData.secretLikes);
             setSecretFavorites(cleanSecrets);
@@ -1648,9 +1719,9 @@ export default function App() {
           </div>
         )}
 
-        {/* Header Estático AnimeZona (Fijo arriba: Logo, Avatar y Búsqueda, nunca desaparece al deslizar) */}
-        {!currentEpisode && (
-          <header className="px-4 pt-1.5 pb-2.5 shrink-0 border-b border-[#161c28] bg-[#0b0e14]/95 backdrop-blur-md z-40 space-y-2">
+        {/* Header Estático AnimeZona (Fijo arriba: Logo y Avatar siempre, Búsqueda solo fuera del reproductor) */}
+        {!isFullscreenPlayer && (
+          <header className={`px-4 pt-1.5 shrink-0 border-b border-[#161c28] bg-[#0b0e14]/95 backdrop-blur-md z-40 ${currentEpisode ? 'pb-2' : 'pb-2.5 space-y-2'}`}>
           {/* Fila 1: Logo ANIMEZONA y Avatar de perfil */}
           <div className="flex items-center justify-between">
             <div
@@ -1695,26 +1766,28 @@ export default function App() {
             </div>
           </div>
 
-          {/* Fila 2: Barra de búsqueda estática siempre presente arriba */}
-          <div className="relative w-full">
-            <Search className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
-            <input
-              type="text"
-              value={searchQuery}
-              onChange={(e) => handleSearchChange(e.target.value)}
-              placeholder="Buscar en AnimeZona..."
-              className="w-full bg-[#121620] border border-[#1e2433] rounded-xl pl-9 pr-9 py-2 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-[#7c3aed] transition"
-            />
-            {searchQuery.length > 0 && (
-              <button
-                onClick={() => handleSearchChange('')}
-                title="Borrar texto"
-                className="absolute right-2.5 top-1/2 -translate-y-1/2 p-1 rounded-full text-slate-400 hover:text-white bg-slate-800/80 hover:bg-slate-700 transition"
-              >
-                <X className="w-3.5 h-3.5" />
-              </button>
-            )}
-          </div>
+          {/* Fila 2: Barra de búsqueda estática (Oculta al estar en el reproductor de episodios) */}
+          {!currentEpisode && (
+            <div className="relative w-full">
+              <Search className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
+              <input
+                type="text"
+                value={searchQuery}
+                onChange={(e) => handleSearchChange(e.target.value)}
+                placeholder="Buscar en AnimeZona..."
+                className="w-full bg-[#121620] border border-[#1e2433] rounded-xl pl-9 pr-9 py-2 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-[#7c3aed] transition"
+              />
+              {searchQuery.length > 0 && (
+                <button
+                  onClick={() => handleSearchChange('')}
+                  title="Borrar texto"
+                  className="absolute right-2.5 top-1/2 -translate-y-1/2 p-1 rounded-full text-slate-400 hover:text-white bg-slate-800/80 hover:bg-slate-700 transition"
+                >
+                  <X className="w-3.5 h-3.5" />
+                </button>
+              )}
+            </div>
+          )}
         </header>
         )}
 
@@ -1722,14 +1795,8 @@ export default function App() {
         {cinemaLightOff && (
           <div
             onClick={() => setCinemaLightOff(false)}
-            className="fixed inset-0 z-45 bg-black/90 backdrop-blur-md flex flex-col justify-between p-4 cursor-pointer transition-all duration-300"
-          >
-            <div className="text-center pt-8 pointer-events-none">
-              <span className="bg-[#121620]/90 px-4 py-2 rounded-full text-xs text-slate-200 border border-slate-700 shadow-2xl inline-flex items-center gap-2">
-                💡 Modo Cine Activo (Toca fuera del video para encender la luz)
-              </span>
-            </div>
-          </div>
+            className="fixed inset-0 z-45 bg-black/85 backdrop-blur-md cursor-pointer transition-all duration-300"
+          />
         )}
 
         {/* MAIN BODY CONTENT */}
@@ -1833,7 +1900,7 @@ export default function App() {
                 </div>
               </div>
 
-              {/* Video Player Container (Con foco e iluminación cuando se apagan las luces) */}
+              {/* Video Player Container */}
               <div
                 ref={playerContainerRef}
                 className={`${
@@ -1841,22 +1908,11 @@ export default function App() {
                     ? 'fixed inset-0 z-50 bg-black w-screen h-screen flex flex-col justify-center items-center'
                     : `relative aspect-video w-full bg-black rounded-xl overflow-hidden shadow-2xl border border-slate-800 transition-all duration-300 ${
                         cinemaLightOff
-                          ? 'z-50 ring-4 ring-[#7c3aed]/80 shadow-[0_0_90px_rgba(124,58,237,0.7)] scale-[1.01]'
+                          ? 'z-50 ring-2 ring-purple-500/40 scale-[1.01]'
                           : ''
                       }`
                 }`}
               >
-                {/* Botón flotante para salir de pantalla completa */}
-                {isFullscreenPlayer && (
-                  <button
-                    onClick={exitPlayerFullscreen}
-                    className="absolute top-4 right-4 z-50 bg-black/60 hover:bg-black/80 text-white border border-white/20 backdrop-blur-md px-3 py-1.5 rounded-full text-xs font-semibold shadow-2xl flex items-center gap-1.5 active:scale-95 transition"
-                  >
-                    <Minimize2 className="w-3.5 h-3.5" />
-                    <span>Salir de Pantalla Completa</span>
-                  </button>
-                )}
-
                 {loadingServers ? (
                   <div className="flex flex-col items-center justify-center h-full text-slate-400 text-xs gap-2">
                     <RefreshCw className="w-7 h-7 animate-spin text-[#7c3aed]" />
@@ -1880,7 +1936,6 @@ export default function App() {
                         src={activeServer.url}
                         allowFullScreen
                         allow="autoplay; fullscreen; encrypted-media; picture-in-picture"
-                        sandbox="allow-scripts allow-same-origin allow-forms allow-presentation allow-encrypted-media"
                         className="w-full h-full border-0"
                         title={activeServer.name}
                       />
@@ -1961,30 +2016,13 @@ export default function App() {
                 )}
               </div>
 
-              {/* Botón flotante para encender la luz si están apagadas */}
-              {cinemaLightOff && (
-                <div className="relative z-50 flex items-center justify-between px-3 py-2 bg-[#121620]/95 rounded-xl border border-purple-500/50 shadow-2xl backdrop-blur-md animate-fade-in">
-                  <span className="text-xs text-purple-300 font-semibold flex items-center gap-1.5">
-                    <Lightbulb className="w-3.5 h-3.5 fill-amber-300 text-amber-300 animate-pulse" />
-                    Modo Cine: Luces apagadas
-                  </span>
-                  <button
-                    onClick={() => setCinemaLightOff(false)}
-                    className="bg-[#7c3aed] hover:bg-[#6d28d9] text-white text-xs font-bold px-3 py-1 rounded-lg shadow-md transition flex items-center gap-1 active:scale-95"
-                  >
-                    <Lightbulb className="w-3.5 h-3.5 fill-current" />
-                    <span>Encender luz</span>
-                  </button>
-                </div>
-              )}
-
               {/* Action Buttons Below Video Player */}
               <div className="flex items-center gap-1.5 overflow-x-auto pb-1 no-scrollbar text-xs">
                 <button
                   onClick={() => setCinemaLightOff(!cinemaLightOff)}
                   className={`border px-3 py-1.5 rounded-lg flex items-center gap-1.5 shrink-0 transition ${
                     cinemaLightOff
-                      ? 'bg-[#7c3aed] border-purple-400 text-white font-bold shadow-lg shadow-purple-900/50'
+                      ? 'bg-[#181d28] border-slate-700 text-amber-300 font-semibold'
                       : 'bg-[#121620] border-[#1e2636] text-slate-300 hover:text-white'
                   }`}
                 >
@@ -2068,6 +2106,7 @@ export default function App() {
               >
                 {episodesList.map((ep) => {
                   const isCurrent = ep.episode_number === currentEpisode.episode_number;
+                  const isWatched = isEpisodeWatched(selectedAnime.id, ep.id, ep.episode_number);
                   return (
                     <div
                       key={ep.episode_number}
@@ -2076,6 +2115,8 @@ export default function App() {
                       className={`flex items-center gap-2.5 p-2 rounded-xl border transition cursor-pointer active:scale-98 ${
                         isCurrent
                           ? 'bg-[#181628] border-[#7c3aed] shadow-md ring-1 ring-[#7c3aed]'
+                          : isWatched
+                          ? 'bg-[#0f1715] border-emerald-600/30 hover:border-emerald-500/50'
                           : 'bg-[#0f131c] border-[#1b2230] hover:border-slate-700'
                       }`}
                     >
@@ -2090,12 +2131,31 @@ export default function App() {
                         <h4 className="text-[11px] font-bold text-white truncate">
                           T{ep.season_number || 1}E{ep.episode_number} - {ep.title}
                         </h4>
-                        {isCurrent ? (
-                          <span className="text-[9px] font-bold text-[#a855f7] block">Viendo ahora</span>
-                        ) : ep.episode_number === currentEpisode.episode_number + 1 ? (
-                          <span className="text-[9px] font-medium text-slate-400 block">Siguiente</span>
-                        ) : null}
+                        <div className="flex items-center gap-1.5 mt-0.5">
+                          {isCurrent ? (
+                            <span className="text-[9px] font-bold text-[#a855f7]">Viendo ahora</span>
+                          ) : ep.episode_number === currentEpisode.episode_number + 1 ? (
+                            <span className="text-[9px] font-medium text-slate-400">Siguiente</span>
+                          ) : null}
+                          {isWatched && (
+                            <span className="text-[9px] font-semibold text-emerald-400 flex items-center gap-0.5">
+                              <Check className="w-2.5 h-2.5" /> Visto
+                            </span>
+                          )}
+                        </div>
                       </div>
+
+                      <button
+                        onClick={(e) => toggleEpisodeWatched(selectedAnime, ep, e)}
+                        title={isWatched ? 'Marcar como no visto' : 'Marcar como visto'}
+                        className={`p-1.5 rounded-lg border transition shrink-0 ${
+                          isWatched
+                            ? 'bg-emerald-950/60 border-emerald-700/50 text-emerald-400'
+                            : 'bg-[#181f2c] border-slate-700 text-slate-400 hover:text-white'
+                        }`}
+                      >
+                        <Eye className="w-3.5 h-3.5" />
+                      </button>
                     </div>
                   );
                 })}
@@ -2199,13 +2259,11 @@ export default function App() {
                   </h2>
 
                   <button
-                    onClick={() => {
-                      removeContinueItem(selectedAnime.id);
-                      showToast('Historial de vistos limpiado');
-                    }}
-                    className="bg-[#1a202c] hover:bg-[#242c3d] text-slate-300 px-3 py-1.5 rounded-lg text-xs font-medium flex items-center gap-1.5 border border-slate-700/40 transition"
+                    onClick={() => clearAnimeWatchedEpisodes(selectedAnime.id)}
+                    className="bg-[#1a202c] hover:bg-[#242c3d] text-slate-300 px-3 py-1.5 rounded-lg text-xs font-medium flex items-center gap-1.5 border border-slate-700/40 transition active:scale-95"
+                    title="Marcar todos como no vistos"
                   >
-                    <Trash2 className="w-3.5 h-3.5" />
+                    <Trash2 className="w-3.5 h-3.5 text-slate-400" />
                     <span>Limpiar vistos</span>
                   </button>
                 </div>
@@ -2232,17 +2290,46 @@ export default function App() {
                   <EpisodeListSkeleton count={6} />
                 ) : (
                   <div className="grid grid-cols-2 sm:grid-cols-3 gap-2.5 pt-2">
-                    {currentSeasonEpisodes.map((ep) => (
-                      <button
-                        key={ep.episode_number}
-                        onClick={() => playEpisode(selectedAnime, ep)}
-                        className="bg-[#121620] hover:bg-[#1a202c] hover:border-[#7c3aed] border border-[#1e2433] rounded-xl p-3 text-center transition flex flex-col items-center justify-center min-h-[58px] group active:scale-95"
-                      >
-                        <span className="text-xs font-bold text-slate-200 group-hover:text-white line-clamp-2">
-                          T{ep.season_number || 1}E{ep.episode_number} - {ep.title}
-                        </span>
-                      </button>
-                    ))}
+                    {currentSeasonEpisodes.map((ep) => {
+                      const isWatched = isEpisodeWatched(selectedAnime.id, ep.id, ep.episode_number);
+                      return (
+                        <div
+                          key={ep.episode_number}
+                          onClick={() => playEpisode(selectedAnime, ep)}
+                          className={`relative rounded-xl p-3 transition flex flex-col justify-between min-h-[68px] group active:scale-98 cursor-pointer border ${
+                            isWatched
+                              ? 'bg-[#0f1715] border-emerald-500/50 shadow-sm'
+                              : 'bg-[#121620] hover:bg-[#1a202c] hover:border-[#7c3aed] border-[#1e2433]'
+                          }`}
+                        >
+                          <div className="flex items-start justify-between gap-1.5 w-full">
+                            <span className="text-xs font-bold text-slate-200 group-hover:text-white line-clamp-2 text-left flex-1">
+                              T{ep.season_number || 1}E{ep.episode_number} - {ep.title}
+                            </span>
+                            <button
+                              onClick={(e) => toggleEpisodeWatched(selectedAnime, ep, e)}
+                              title={isWatched ? 'Marcar como no visto' : 'Marcar como visto'}
+                              className={`p-1 rounded-md shrink-0 transition ${
+                                isWatched
+                                  ? 'text-emerald-400 bg-emerald-950/80 hover:bg-emerald-900 border border-emerald-800/50'
+                                  : 'text-slate-500 hover:text-slate-300 bg-slate-800/40 border border-slate-700/30'
+                              }`}
+                            >
+                              <Eye className="w-3.5 h-3.5" />
+                            </button>
+                          </div>
+
+                          {isWatched && (
+                            <div className="flex items-center gap-1 pt-1.5">
+                              <span className="flex items-center gap-1 text-[10px] text-emerald-400 font-bold bg-emerald-950/70 border border-emerald-800/40 px-2 py-0.5 rounded-full">
+                                <Check className="w-2.5 h-2.5" />
+                                Visto
+                              </span>
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })}
                   </div>
                 )}
               </div>

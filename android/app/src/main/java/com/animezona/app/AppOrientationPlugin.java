@@ -96,4 +96,23 @@ public class AppOrientationPlugin extends Plugin {
             call.resolve();
         });
     }
+
+    @Override
+    public Boolean shouldOverrideLoad(android.net.Uri url) {
+        if (url == null) return false;
+        String host = url.getHost();
+
+        // Permitir navegación interna de la aplicación (localhost / 127.0.0.1)
+        if (host != null && (host.equals("localhost") || host.equals("127.0.0.1"))) {
+            return false;
+        }
+
+        String scheme = url.getScheme();
+        if ("data".equalsIgnoreCase(scheme) || "blob".equalsIgnoreCase(scheme)) {
+            return false;
+        }
+
+        // Interceptar y bloquear cualquier popup, anuncio o intento de abrir Google Chrome o navegadores externos
+        return true;
+    }
 }

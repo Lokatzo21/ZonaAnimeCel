@@ -50,6 +50,7 @@ import { api, MappedAnime, MappedServer, MappedEpisode, TMDB_GENRES } from './se
 import { supabase } from './services/supabase';
 import { syncService } from './services/userSync';
 import { ORIGINAL_AVATARS, DEFAULT_AVATAR } from './config/avatars';
+import { App as CapApp } from '@capacitor/app';
 
 export default function App() {
   // Current authenticated user id
@@ -481,6 +482,137 @@ export default function App() {
     }
   }, [searchQuery]);
 
+  // REFS FOR NATIVE HARDWARE BACK BUTTON & ANDROID SWIPE NAVIGATION
+  const cinemaLightOffRef = useRef(cinemaLightOff);
+  const showEditProfileModalRef = useRef(showEditProfileModal);
+  const showAddToListModalRef = useRef(showAddToListModal);
+  const showCastModalRef = useRef(showCastModal);
+  const showLogoutConfirmRef = useRef(showLogoutConfirm);
+  const showAuthRequiredModalRef = useRef(showAuthRequiredModal);
+  const secretRestoreConfirmIdRef = useRef(secretRestoreConfirmId);
+  const secretRemoveAnimeTargetRef = useRef(secretRemoveAnimeTarget);
+  const currentEpisodeRef = useRef(currentEpisode);
+  const selectedAnimeRef = useRef(selectedAnime);
+  const searchQueryRef = useRef(searchQuery);
+  const activeTabRef = useRef(activeTab);
+
+  useEffect(() => { cinemaLightOffRef.current = cinemaLightOff; }, [cinemaLightOff]);
+  useEffect(() => { showEditProfileModalRef.current = showEditProfileModal; }, [showEditProfileModal]);
+  useEffect(() => { showAddToListModalRef.current = showAddToListModal; }, [showAddToListModal]);
+  useEffect(() => { showCastModalRef.current = showCastModal; }, [showCastModal]);
+  useEffect(() => { showLogoutConfirmRef.current = showLogoutConfirm; }, [showLogoutConfirm]);
+  useEffect(() => { showAuthRequiredModalRef.current = showAuthRequiredModal; }, [showAuthRequiredModal]);
+  useEffect(() => { secretRestoreConfirmIdRef.current = secretRestoreConfirmId; }, [secretRestoreConfirmId]);
+  useEffect(() => { secretRemoveAnimeTargetRef.current = secretRemoveAnimeTarget; }, [secretRemoveAnimeTarget]);
+  useEffect(() => { currentEpisodeRef.current = currentEpisode; }, [currentEpisode]);
+  useEffect(() => { selectedAnimeRef.current = selectedAnime; }, [selectedAnime]);
+  useEffect(() => { searchQueryRef.current = searchQuery; }, [searchQuery]);
+  useEffect(() => { activeTabRef.current = activeTab; }, [activeTab]);
+
+  // Push history state whenever navigating into a subview so Android gesture swipe back works
+  useEffect(() => {
+    if (selectedAnime || currentEpisode || showEditProfileModal || showAddToListModal || cinemaLightOff) {
+      window.history.pushState({ animezonaSubView: true }, '');
+    }
+  }, [selectedAnime?.id, currentEpisode?.id, showEditProfileModal, showAddToListModal, cinemaLightOff]);
+
+  // HARDWARE BACK BUTTON & GESTURE NAVIGATION HANDLER
+  useEffect(() => {
+    let backListener: any = null;
+    let lastBackPressTime = 0;
+
+    const handleBackNavigation = () => {
+      // 1. Apagar luz activa -> encender luz
+      if (cinemaLightOffRef.current) {
+        setCinemaLightOff(false);
+        return true;
+      }
+      // 2. Modales abiertos -> cerrarlos
+      if (showEditProfileModalRef.current) {
+        setShowEditProfileModal(false);
+        return true;
+      }
+      if (showAddToListModalRef.current) {
+        setShowAddToListModal(false);
+        return true;
+      }
+      if (showCastModalRef.current) {
+        setShowCastModal(false);
+        return true;
+      }
+      if (showLogoutConfirmRef.current) {
+        setShowLogoutConfirm(false);
+        return true;
+      }
+      if (showAuthRequiredModalRef.current) {
+        setShowAuthRequiredModal(null);
+        return true;
+      }
+      if (secretRestoreConfirmIdRef.current) {
+        setSecretRestoreConfirmId(null);
+        return true;
+      }
+      if (secretRemoveAnimeTargetRef.current) {
+        setSecretRemoveAnimeTarget(null);
+        return true;
+      }
+      // 3. Viendo episodio en reproductor -> volver a la ficha del anime
+      if (currentEpisodeRef.current) {
+        setCurrentEpisode(null);
+        return true;
+      }
+      // 4. Viendo ficha del anime -> volver al catálogo o inicio
+      if (selectedAnimeRef.current) {
+        setSelectedAnime(null);
+        return true;
+      }
+      // 5. Búsqueda con texto -> limpiar búsqueda
+      if (searchQueryRef.current.trim().length > 0) {
+        setSearchQuery('');
+        return true;
+      }
+      // 6. En otra pestaña distinta de 'home' -> regresar a 'home'
+      if (activeTabRef.current !== 'home') {
+        setActiveTab('home');
+        return true;
+      }
+
+      // 7. En 'home' sin nada abierto -> doble toque para salir de la app
+      const now = Date.now();
+      if (now - lastBackPressTime < 2000) {
+        CapApp.exitApp();
+        return false;
+      } else {
+        lastBackPressTime = now;
+        showToast('Presiona de nuevo para salir de AnimeZona');
+        return true;
+      }
+    };
+
+    // Hardware back button en Android (Capacitor)
+    CapApp.addListener('backButton', () => {
+      handleBackNavigation();
+    }).then((listener) => {
+      backListener = listener;
+    }).catch((err) => {
+      console.log('CapApp backButton listener:', err);
+    });
+
+    // Gestos de deslizar para volver / botón atrás del navegador web
+    const onPopState = () => {
+      handleBackNavigation();
+    };
+    window.addEventListener('popstate', onPopState);
+
+    return () => {
+      if (backListener) {
+        backListener.remove();
+      }
+      window.removeEventListener('popstate', onPopState);
+    };
+  }, []);
+
+
   // AUTO-SCROLL TO ACTIVE EPISODE IN THE LIST
   useEffect(() => {
     if (currentEpisode) {
@@ -535,6 +667,11 @@ export default function App() {
 
   const handleSearchChange = async (q: string) => {
     setSearchQuery(q);
+    if (q.trim().length > 0 && activeTab !== 'catalog') {
+      setSelectedAnime(null);
+      setCurrentEpisode(null);
+      setActiveTab('catalog');
+    }
     setCatalogPage(1);
     setHasMoreCatalog(true);
     const clean = q.trim();
@@ -1221,12 +1358,18 @@ export default function App() {
       <div
         className={`w-full bg-[#0b0e14] flex flex-col transition-all duration-300 relative ${
           viewMode === 'mobile'
-            ? 'max-w-full sm:max-w-[420px] min-h-[100dvh] sm:min-h-[850px] rounded-none sm:rounded-[44px] border-none sm:border-[7px] sm:border-[#181e2b] sm:shadow-[0_20px_60px_-15px_rgba(0,0,0,0.95)] overflow-hidden'
-            : 'max-w-md min-h-screen'
+            ? 'max-w-full sm:max-w-[420px] h-[100dvh] max-h-[100dvh] sm:h-[850px] sm:max-h-[850px] rounded-none sm:rounded-[44px] border-none sm:border-[7px] sm:border-[#181e2b] sm:shadow-[0_20px_60px_-15px_rgba(0,0,0,0.95)] overflow-hidden'
+            : 'max-w-md h-[100dvh] max-h-[100dvh] overflow-hidden'
         }`}
       >
-        {/* Android Native Status Bar (Only on desktop preview; phone has its own real status bar) */}
-        <div className="hidden sm:flex px-6 pt-3 pb-1 items-center justify-between text-[11px] text-slate-400 font-semibold bg-[#0b0e14]">
+        {/* Notch / Status Bar Safe-Area Margin (Tope superior fijo para no tapar reloj y notificaciones) */}
+        <div
+          className="w-full shrink-0 bg-[#0b0e14]"
+          style={{ height: 'max(env(safe-area-inset-top, 0px), 32px)' }}
+        />
+
+        {/* Android Native Status Bar (Visible solo en preview desktop) */}
+        <div className="hidden sm:flex px-6 pt-1 pb-1 items-center justify-between text-[11px] text-slate-400 font-semibold bg-[#0b0e14]">
           <span>12:45</span>
           <div className="flex items-center gap-2 text-slate-300">
             {isOnline ? (
@@ -1248,7 +1391,7 @@ export default function App() {
 
         {/* Sutil Aviso de Conexión Offline */}
         {!isOnline && (
-          <div className="bg-amber-950/90 border-b border-amber-500/40 text-amber-200 px-3.5 py-1.5 text-[11px] font-semibold flex items-center justify-between backdrop-blur-md sticky top-0 z-50 animate-fade-in shadow-md">
+          <div className="bg-amber-950/90 border-b border-amber-500/40 text-amber-200 px-3.5 py-1.5 text-[11px] font-semibold flex items-center justify-between backdrop-blur-md shrink-0 z-50 animate-fade-in shadow-md">
             <div className="flex items-center gap-2 min-w-0">
               <span className="w-2 h-2 rounded-full bg-amber-400 animate-ping shrink-0"></span>
               <WifiOff className="w-3.5 h-3.5 text-amber-400 shrink-0" />
@@ -1271,64 +1414,84 @@ export default function App() {
           </div>
         )}
 
-        {/* Clean AnimeZona Header */}
-        <header className="px-4 py-3 flex items-center justify-between border-b border-[#161c28] bg-[#0b0e14]/95 backdrop-blur-md sticky top-0 z-40">
-          <div
-            onClick={() => {
-              setSelectedAnime(null);
-              setCurrentEpisode(null);
-              setActiveTab('home');
-            }}
-            className="flex items-center gap-2 cursor-pointer active:scale-95 transition"
-          >
-            <div className="w-8 h-8 rounded-lg bg-gradient-to-tr from-[#7c3aed] to-[#ec4899] flex items-center justify-center shadow-lg shadow-purple-950/60">
-              <Flame className="w-5 h-5 text-white fill-white" />
-            </div>
-            <div>
-              <span className="font-extrabold text-base tracking-tight text-white">
-                ANIME<span className="text-[#a855f7]">ZONA</span>
-              </span>
-            </div>
-          </div>
-
-          <div className="flex items-center gap-2">
-            <button
-              onClick={resetAndOpenCatalog}
-              title="Buscar en Catálogo"
-              className={`p-2 rounded-full transition ${
-                activeTab === 'catalog'
-                  ? 'bg-[#7c3aed] text-white'
-                  : 'bg-[#141924] text-slate-300 hover:text-white'
-              }`}
-            >
-              <Search className="w-4 h-4" />
-            </button>
-            <button
+        {/* Header Estático AnimeZona (Nunca desaparece al deslizar hacia arriba) */}
+        <header className="px-4 pt-1.5 pb-2.5 shrink-0 border-b border-[#161c28] bg-[#0b0e14]/95 backdrop-blur-md z-40 space-y-2">
+          {/* Fila 1: Logo ANIMEZONA y Avatar de perfil */}
+          <div className="flex items-center justify-between">
+            <div
               onClick={() => {
                 setSelectedAnime(null);
                 setCurrentEpisode(null);
-                setActiveTab('profile');
+                setActiveTab('home');
               }}
-              title="Mi Perfil"
-              className={`p-1.5 rounded-full transition overflow-hidden border ${
-                activeTab === 'profile'
-                  ? 'border-[#a855f7] ring-2 ring-[#7c3aed]/50'
-                  : 'border-slate-700 bg-[#141924]'
-              }`}
+              className="flex items-center gap-2 cursor-pointer active:scale-95 transition"
             >
-              <img src={userAvatar} alt="Perfil" className="w-5 h-5 rounded-full object-cover" />
-            </button>
+              <div className="w-8 h-8 rounded-lg bg-gradient-to-tr from-[#7c3aed] to-[#ec4899] flex items-center justify-center shadow-lg shadow-purple-950/60">
+                <Flame className="w-5 h-5 text-white fill-white" />
+              </div>
+              <div>
+                <span className="font-extrabold text-base tracking-tight text-white">
+                  ANIME<span className="text-[#a855f7]">ZONA</span>
+                </span>
+              </div>
+            </div>
+
+            <div className="flex items-center gap-2">
+              <button
+                onClick={() => {
+                  setSelectedAnime(null);
+                  setCurrentEpisode(null);
+                  setActiveTab('profile');
+                }}
+                title="Mi Perfil"
+                className={`p-1 rounded-full transition overflow-hidden border ${
+                  activeTab === 'profile'
+                    ? 'border-[#a855f7] ring-2 ring-[#7c3aed]/50'
+                    : 'border-slate-700 bg-[#141924]'
+                }`}
+              >
+                <img
+                  src={userAvatar}
+                  alt="Perfil"
+                  onError={(e) => { e.currentTarget.src = DEFAULT_AVATAR; }}
+                  className="w-7 h-7 rounded-full object-cover"
+                />
+              </button>
+            </div>
+          </div>
+
+          {/* Fila 2: Barra de búsqueda estática siempre presente arriba */}
+          <div className="relative w-full">
+            <Search className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
+            <input
+              type="text"
+              value={searchQuery}
+              onChange={(e) => handleSearchChange(e.target.value)}
+              placeholder="Buscar en AnimeZona..."
+              className="w-full bg-[#121620] border border-[#1e2433] rounded-xl pl-9 pr-9 py-2 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-[#7c3aed] transition"
+            />
+            {searchQuery.length > 0 && (
+              <button
+                onClick={() => handleSearchChange('')}
+                title="Borrar texto"
+                className="absolute right-2.5 top-1/2 -translate-y-1/2 p-1 rounded-full text-slate-400 hover:text-white bg-slate-800/80 hover:bg-slate-700 transition"
+              >
+                <X className="w-3.5 h-3.5" />
+              </button>
+            )}
           </div>
         </header>
 
-        {/* CINEMA BLUR CURTAIN */}
+        {/* TELÓN DE DESENFOQUE PARA APAGAR LUZ (Todo oscuro y borroso excepto el reproductor) */}
         {cinemaLightOff && (
           <div
             onClick={() => setCinemaLightOff(false)}
-            className="fixed inset-0 z-35 bg-black/90 backdrop-blur-md flex items-center justify-center cursor-pointer transition-all duration-300"
+            className="fixed inset-0 z-45 bg-black/90 backdrop-blur-md flex flex-col justify-between p-4 cursor-pointer transition-all duration-300"
           >
-            <div className="bg-[#121620] px-4 py-2 rounded-full text-xs text-slate-200 border border-slate-700 shadow-2xl animate-fade-in pointer-events-none">
-              💡 Modo Cine Activo (Toca para encender la luz)
+            <div className="text-center pt-8 pointer-events-none">
+              <span className="bg-[#121620]/90 px-4 py-2 rounded-full text-xs text-slate-200 border border-slate-700 shadow-2xl inline-flex items-center gap-2">
+                💡 Modo Cine Activo (Toca fuera del video para encender la luz)
+              </span>
             </div>
           </div>
         )}
@@ -1348,7 +1511,7 @@ export default function App() {
           {/* SCREEN 1: WATCH EPISODE (MATCHING USER'S IMAGE 2)              */}
           {/* ============================================================== */}
           {selectedAnime && currentEpisode ? (
-            <div className={`space-y-4 p-3 bg-[#080b11] relative ${cinemaLightOff ? 'z-40' : ''}`}>
+            <div className="space-y-4 p-3 bg-[#080b11] relative">
               <button
                 onClick={() => setCurrentEpisode(null)}
                 className="text-xs font-semibold text-[#a855f7] hover:text-[#c084fc] flex items-center gap-1 transition"
@@ -1434,10 +1597,14 @@ export default function App() {
                 </div>
               </div>
 
-              {/* Video Player Container */}
+              {/* Video Player Container (Con foco e iluminación cuando se apagan las luces) */}
               <div
                 ref={playerContainerRef}
-                className="relative aspect-video w-full bg-black rounded-xl overflow-hidden shadow-2xl border border-slate-800"
+                className={`relative aspect-video w-full bg-black rounded-xl overflow-hidden shadow-2xl border border-slate-800 transition-all duration-300 ${
+                  cinemaLightOff
+                    ? 'z-50 ring-4 ring-[#7c3aed]/80 shadow-[0_0_90px_rgba(124,58,237,0.7)] scale-[1.01]'
+                    : ''
+                }`}
               >
                 {loadingServers ? (
                   <div className="flex flex-col items-center justify-center h-full text-slate-400 text-xs gap-2">
@@ -1488,7 +1655,7 @@ export default function App() {
                           onClick={handleNextEpisodeVerYa}
                           className="bg-slate-800/60 hover:bg-slate-700/80 text-slate-200 border border-slate-600/30 px-2.5 py-1 rounded-lg text-xs font-semibold flex items-center gap-1 transition"
                         >
-                          <Play className="w-3 h-3 fill-white text-white" />
+                          <Play className="w-3.5 h-3.5 fill-white text-white" />
                           <span>Ver ya</span>
                         </button>
                       </div>
@@ -1541,14 +1708,35 @@ export default function App() {
                 )}
               </div>
 
+              {/* Botón flotante para encender la luz si están apagadas */}
+              {cinemaLightOff && (
+                <div className="relative z-50 flex items-center justify-between px-3 py-2 bg-[#121620]/95 rounded-xl border border-purple-500/50 shadow-2xl backdrop-blur-md animate-fade-in">
+                  <span className="text-xs text-purple-300 font-semibold flex items-center gap-1.5">
+                    <Lightbulb className="w-3.5 h-3.5 fill-amber-300 text-amber-300 animate-pulse" />
+                    Modo Cine: Luces apagadas
+                  </span>
+                  <button
+                    onClick={() => setCinemaLightOff(false)}
+                    className="bg-[#7c3aed] hover:bg-[#6d28d9] text-white text-xs font-bold px-3 py-1 rounded-lg shadow-md transition flex items-center gap-1 active:scale-95"
+                  >
+                    <Lightbulb className="w-3.5 h-3.5 fill-current" />
+                    <span>Encender luz</span>
+                  </button>
+                </div>
+              )}
+
               {/* Action Buttons Below Video Player */}
               <div className="flex items-center gap-1.5 overflow-x-auto pb-1 no-scrollbar text-xs">
                 <button
                   onClick={() => setCinemaLightOff(!cinemaLightOff)}
-                  className="bg-[#121620] border border-[#1e2636] text-slate-300 hover:text-white px-3 py-1.5 rounded-lg flex items-center gap-1.5 shrink-0"
+                  className={`border px-3 py-1.5 rounded-lg flex items-center gap-1.5 shrink-0 transition ${
+                    cinemaLightOff
+                      ? 'bg-[#7c3aed] border-purple-400 text-white font-bold shadow-lg shadow-purple-900/50'
+                      : 'bg-[#121620] border-[#1e2636] text-slate-300 hover:text-white'
+                  }`}
                 >
-                  <Lightbulb className="w-3.5 h-3.5 text-amber-400" />
-                  <span>Apagar luz</span>
+                  <Lightbulb className={`w-3.5 h-3.5 ${cinemaLightOff ? 'fill-amber-300 text-amber-300' : 'text-amber-400'}`} />
+                  <span>{cinemaLightOff ? 'Encender luz' : 'Apagar luz'}</span>
                 </button>
 
                 <button
@@ -2067,26 +2255,6 @@ export default function App() {
             /* SCREEN 4: CATÁLOGO                                             */
             /* ============================================================== */
             <div className="px-4 py-3 space-y-4">
-              <div className="relative">
-                <Search className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
-                <input
-                  type="text"
-                  value={searchQuery}
-                  onChange={(e) => handleSearchChange(e.target.value)}
-                  placeholder="Buscar en AnimeZona..."
-                  className="w-full bg-[#121620] border border-[#1e2433] rounded-xl pl-9 pr-9 py-2.5 text-xs text-white placeholder-slate-500 focus:outline-none focus:border-[#7c3aed]"
-                />
-                {searchQuery.length > 0 && (
-                  <button
-                    onClick={() => handleSearchChange('')}
-                    title="Borrar texto"
-                    className="absolute right-2.5 top-1/2 -translate-y-1/2 p-1 rounded-full text-slate-400 hover:text-white bg-slate-800/80 hover:bg-slate-700 transition"
-                  >
-                    <X className="w-3.5 h-3.5" />
-                  </button>
-                )}
-              </div>
-
               <div className="flex gap-1.5 overflow-x-auto pb-1 no-scrollbar">
                 {Object.keys(TMDB_GENRES).map((g) => (
                   <button
@@ -2591,7 +2759,12 @@ export default function App() {
                   {/* TOP USER CARD */}
                   <div className="bg-[#0b0e14] border-b border-[#1b2230] pb-4 flex items-center gap-4">
                     <div className="w-16 h-16 rounded-full overflow-hidden border-2 border-white shadow-xl bg-black shrink-0">
-                      <img src={userAvatar} alt={username} className="w-full h-full object-cover" />
+                      <img
+                        src={userAvatar}
+                        alt={username}
+                        onError={(e) => { e.currentTarget.src = DEFAULT_AVATAR; }}
+                        className="w-full h-full object-cover"
+                      />
                     </div>
 
                     <div className="space-y-1 flex-1 min-w-0">
@@ -3052,7 +3225,12 @@ export default function App() {
                             : 'opacity-70 hover:opacity-100'
                         }`}
                       >
-                        <img src={av.url} alt={av.name} className="w-full h-full object-cover rounded-full bg-black" />
+                        <img
+                          src={av.url}
+                          alt={av.name}
+                          onError={(e) => { e.currentTarget.src = DEFAULT_AVATAR; }}
+                          className="w-full h-full object-cover rounded-full bg-black"
+                        />
                       </button>
                     );
                   })}

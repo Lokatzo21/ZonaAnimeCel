@@ -14,6 +14,9 @@ jobs:
       - name: Checkout Source Code
         uses: actions/checkout@v4
 
+      - name: Grant Execute Permission to Gradlew
+        run: chmod +x android/gradlew
+
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
@@ -36,9 +39,6 @@ jobs:
 
       - name: Sync Capacitor Android
         run: npx cap sync android
-
-      - name: Grant Execute Permission to Gradlew
-        run: chmod +x android/gradlew
 
       - name: Build APK with Gradle
         run: |

@@ -1,0 +1,8 @@
+{
+  "name": "Web to App Studio",
+  "description": "Herramienta y guía interactiva para transformar sitios web y repositorios en aplicaciones móviles y PWA sin alterar el repositorio original.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}

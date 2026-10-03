@@ -46,11 +46,24 @@ import {
   Wifi,
   WifiOff
 } from 'lucide-react';
-import { api, MappedAnime, MappedServer, MappedEpisode, TMDB_GENRES } from './services/api';
+import { api, MappedAnime, MappedServer, MappedEpisode, TMDB_GENRES, cacheAnime, getCachedAnime } from './services/api';
 import { supabase } from './services/supabase';
 import { syncService } from './services/userSync';
 import { ORIGINAL_AVATARS, DEFAULT_AVATAR } from './config/avatars';
 import { App as CapApp } from '@capacitor/app';
+
+// Helper to strictly sanitize IDs and prevent [object Object] or invalid values
+const cleanIdList = (list: any[]): string[] => {
+  if (!Array.isArray(list)) return [];
+  return list
+    .map((item) => {
+      if (typeof item === 'object' && item !== null) {
+        return String(item.id || item.animeId || item.anime_id || '').trim();
+      }
+      return String(item).trim();
+    })
+    .filter((id) => id && id !== '[object Object]' && id !== 'null' && id !== 'undefined');
+};
 
 export default function App() {
   // Current authenticated user id
@@ -64,11 +77,39 @@ export default function App() {
   const [secretSubTab, setSecretSubTab] = useState<'historial' | 'favoritos' | 'catalogo'>('historial');
   const [viewMode, setViewMode] = useState<'mobile' | 'fullscreen'>('mobile');
 
-  // Anime Data
-  const [trendingAnimes, setTrendingAnimes] = useState<MappedAnime[]>([]);
-  const [topAnimes, setTopAnimes] = useState<MappedAnime[]>([]);
-  const [catalogAnimes, setCatalogAnimes] = useState<MappedAnime[]>([]);
-  const [loading, setLoading] = useState(true);
+  // Anime Data with instant cache loading for 0ms initial render
+  const [trendingAnimes, setTrendingAnimes] = useState<MappedAnime[]>(() => {
+    try {
+      const s = localStorage.getItem('animezona_cached_trending');
+      return s ? JSON.parse(s) : [];
+    } catch {
+      return [];
+    }
+  });
+  const [topAnimes, setTopAnimes] = useState<MappedAnime[]>(() => {
+    try {
+      const s = localStorage.getItem('animezona_cached_top');
+      return s ? JSON.parse(s) : [];
+    } catch {
+      return [];
+    }
+  });
+  const [catalogAnimes, setCatalogAnimes] = useState<MappedAnime[]>(() => {
+    try {
+      const s = localStorage.getItem('animezona_cached_catalog');
+      return s ? JSON.parse(s) : [];
+    } catch {
+      return [];
+    }
+  });
+  const [loading, setLoading] = useState<boolean>(() => {
+    try {
+      const s = localStorage.getItem('animezona_cached_trending');
+      return !s || JSON.parse(s).length === 0;
+    } catch {
+      return true;
+    }
+  });
   const [catalogPage, setCatalogPage] = useState(1);
   const [loadingMore, setLoadingMore] = useState(false);
   const [hasMoreCatalog, setHasMoreCatalog] = useState(true);
@@ -91,7 +132,20 @@ export default function App() {
   const [secretFavorites, setSecretFavorites] = useState<string[]>(() => {
     try {
       const s = localStorage.getItem('animezona_secret_favs') || localStorage.getItem('secretLikes');
-      return s ? JSON.parse(s) : [];
+      if (!s) return [];
+      return cleanIdList(JSON.parse(s));
+    } catch {
+      return [];
+    }
+  });
+
+  // Cached full objects for secret favorites so they ALWAYS show real images and titles
+  const [secretAnimesData, setSecretAnimesData] = useState<MappedAnime[]>(() => {
+    try {
+      const s = localStorage.getItem('animezona_secret_objects');
+      if (!s) return [];
+      const parsed = JSON.parse(s);
+      return Array.isArray(parsed) ? parsed.filter((a) => a && a.id && a.title && !a.title.startsWith('Anime #')) : [];
     } catch {
       return [];
     }
@@ -152,11 +206,7 @@ export default function App() {
     try {
       const s = localStorage.getItem('animezona_favs') || localStorage.getItem('favoriteAnimes');
       if (!s) return [];
-      const parsed = JSON.parse(s);
-      if (!Array.isArray(parsed)) return [];
-      return parsed
-        .map((item) => (typeof item === 'object' && item !== null ? String(item.id || item.animeId || '') : String(item)))
-        .filter((id) => id && id !== '[object Object]');
+      return cleanIdList(JSON.parse(s));
     } catch {
       return [];
     }
@@ -170,12 +220,12 @@ export default function App() {
       let arr: MappedAnime[] = [];
       if (s) {
         const parsed = JSON.parse(s);
-        if (Array.isArray(parsed)) arr = parsed.filter((a) => a && typeof a === 'object' && a.title);
+        if (Array.isArray(parsed)) arr = parsed.filter((a) => a && a.id && a.title && !a.title.startsWith('Anime #'));
       }
       if (sAlt) {
         const parsedAlt = JSON.parse(sAlt);
         if (Array.isArray(parsedAlt)) {
-          const objs = parsedAlt.filter((a) => a && typeof a === 'object' && a.title);
+          const objs = parsedAlt.filter((a) => a && typeof a === 'object' && a.id && a.title && !a.title.startsWith('Anime #'));
           arr = [...arr, ...objs];
         }
       }
@@ -193,11 +243,7 @@ export default function App() {
     try {
       const s = localStorage.getItem('animezona_hidden_recommendations') || localStorage.getItem('hiddenAnimes');
       if (!s) return [];
-      const parsed = JSON.parse(s);
-      if (!Array.isArray(parsed)) return [];
-      return parsed
-        .map((item) => (typeof item === 'object' && item !== null ? String(item.id || item.animeId || '') : String(item)))
-        .filter((id) => id && id !== '[object Object]');
+      return cleanIdList(JSON.parse(s));
     } catch {
       return [];
     }
@@ -207,11 +253,50 @@ export default function App() {
   const [hiddenDataMap, setHiddenDataMap] = useState<Record<string, { title: string; image: string }>>(() => {
     try {
       const s = localStorage.getItem('animezona_hidden_map');
-      return s ? JSON.parse(s) : {};
+      if (!s) return {};
+      const parsed = JSON.parse(s);
+      const clean: Record<string, { title: string; image: string }> = {};
+      Object.keys(parsed || {}).forEach((k) => {
+        if (k && k !== '[object Object]' && parsed[k]?.title && !parsed[k].title.startsWith('Anime #')) {
+          clean[k] = parsed[k];
+        }
+      });
+      return clean;
     } catch {
       return {};
     }
   });
+
+  // Universal lookup across all memory stores & api cache
+  const findAnimeInCache = (id: string | number): MappedAnime | undefined => {
+    const idStr = String(id).trim();
+    if (!idStr || idStr === '[object Object]') return undefined;
+    const fast = getCachedAnime(idStr);
+    if (fast && fast.title && !fast.title.startsWith('Anime #')) return fast;
+
+    return (
+      favoriteAnimesData.find((a) => String(a.id) === idStr) ||
+      secretAnimesData.find((a) => String(a.id) === idStr) ||
+      trendingAnimes.find((a) => String(a.id) === idStr) ||
+      topAnimes.find((a) => String(a.id) === idStr) ||
+      catalogAnimes.find((a) => String(a.id) === idStr) ||
+      secretAnimes.find((a) => String(a.id) === idStr) ||
+      relatedAnimes.find((a) => String(a.id) === idStr)
+    );
+  };
+
+  // Helper to persist full secret anime object in cache
+  const saveSecretAnimeObject = (anime: MappedAnime) => {
+    if (!anime || !anime.id || anime.title.startsWith('Anime #')) return;
+    const idStr = String(anime.id).trim();
+    if (idStr === '[object Object]') return;
+    setSecretAnimesData((prev) => {
+      const filtered = prev.filter((a) => String(a.id) !== idStr);
+      const updated = [...filtered, anime];
+      localStorage.setItem('animezona_secret_objects', JSON.stringify(updated));
+      return updated;
+    });
+  };
 
   // Helper to normalize continue watching data and eliminate NaNm NaNs
   const normalizeContinueItem = (item: any) => {
@@ -359,12 +444,14 @@ export default function App() {
           localStorage.setItem('watchedAnimes', JSON.stringify(cloudData.watchedAnimes));
         }
         if (cloudData.secretLikes && Array.isArray(cloudData.secretLikes)) {
-          setSecretFavorites(cloudData.secretLikes);
-          localStorage.setItem('secretLikes', JSON.stringify(cloudData.secretLikes));
+          const cleanSecrets = cleanIdList(cloudData.secretLikes);
+          setSecretFavorites(cleanSecrets);
+          localStorage.setItem('secretLikes', JSON.stringify(cleanSecrets));
         }
         if (cloudData.hiddenAnimes && Array.isArray(cloudData.hiddenAnimes)) {
-          setHiddenRecommendations(cloudData.hiddenAnimes);
-          localStorage.setItem('hiddenAnimes', JSON.stringify(cloudData.hiddenAnimes));
+          const cleanHidden = cleanIdList(cloudData.hiddenAnimes);
+          setHiddenRecommendations(cleanHidden);
+          localStorage.setItem('hiddenAnimes', JSON.stringify(cleanHidden));
         }
       }
     });
@@ -420,53 +507,81 @@ export default function App() {
     setSecretAnimes(secret);
   };
 
-  // Auto-sync missing anime objects for favorites so they ALWAYS show and NEVER stay loading
+  // Unified Auto-sync and resolution of missing anime metadata for Favorites, Secret Favorites, and Hidden Animes
   useEffect(() => {
-    if (favorites.length === 0) return;
-    const existingIds = new Set(favoriteAnimesData.map((a) => String(a.id)));
-    const cleanFavs = favorites.filter((id) => id && id !== '[object Object]');
-    const missingIds = cleanFavs.filter((id) => !existingIds.has(String(id)));
+    const cleanFavs = cleanIdList(favorites);
+    const cleanSecrets = cleanIdList(secretFavorites);
+    const cleanHidden = cleanIdList(hiddenRecommendations);
 
-    if (missingIds.length > 0) {
-      Promise.all(
-        missingIds.map(async (id) => {
-          const inMem = [...trendingAnimes, ...topAnimes, ...catalogAnimes, ...relatedAnimes].find(
-            (a) => String(a.id) === String(id)
-          );
-          if (inMem) return inMem;
-          try {
-            const fetched = await api.getAnimeInfo(id);
-            if (fetched) return fetched;
-          } catch {}
-          return {
-            id,
-            title: `Anime #${id}`,
-            image: 'https://images.unsplash.com/photo-1578632767115-351597cf2477?w=500&q=80',
-            score: '9.0',
-            totalEpisodes: 12,
-            type: 'Anime',
-            description: 'Anime añadido a tus favoritos.',
-            genres: ['Anime'],
-            status: 'En emisión',
-            isCustom: false
-          } as MappedAnime;
-        })
-      ).then((res) => {
-        const valid = res.filter(Boolean) as MappedAnime[];
-        if (valid.length > 0) {
-          setFavoriteAnimesData((prev) => {
-            const map = new Map<string, MappedAnime>();
-            [...prev, ...valid].forEach((a) => {
-              if (a && a.id) map.set(String(a.id), a);
-            });
-            const arr = Array.from(map.values());
-            localStorage.setItem('animezona_fav_objects', JSON.stringify(arr));
-            return arr;
+    const missingFavIds = cleanFavs.filter((id) => !favoriteAnimesData.some((a) => String(a.id) === id));
+    const missingSecretIds = cleanSecrets.filter((id) => !secretAnimesData.some((a) => String(a.id) === id));
+    const missingHiddenIds = cleanHidden.filter((id) => !hiddenDataMap[id] || hiddenDataMap[id].title?.startsWith('Anime #'));
+
+    const allMissing = Array.from(new Set([...missingFavIds, ...missingSecretIds, ...missingHiddenIds]));
+    if (allMissing.length === 0) return;
+
+    let isMounted = true;
+    Promise.all(
+      allMissing.map(async (id) => {
+        const inMem = findAnimeInCache(id);
+        if (inMem && inMem.title && !inMem.title.startsWith('Anime #')) return inMem;
+        try {
+          const fetched = await api.getAnimeInfo(id);
+          if (fetched && fetched.title && !fetched.title.startsWith('Anime #')) return fetched;
+        } catch {}
+        return null;
+      })
+    ).then((resolved) => {
+      if (!isMounted) return;
+      const valid = resolved.filter(Boolean) as MappedAnime[];
+      if (valid.length === 0) return;
+
+      // 1. Update favorites objects
+      const newFavObjects = valid.filter((v) => cleanFavs.includes(String(v.id)));
+      if (newFavObjects.length > 0) {
+        setFavoriteAnimesData((prev) => {
+          const map = new Map<string, MappedAnime>();
+          [...prev, ...newFavObjects].forEach((a) => {
+            if (a && a.id) map.set(String(a.id), a);
           });
-        }
-      });
-    }
-  }, [favorites, trendingAnimes, topAnimes, catalogAnimes, relatedAnimes]);
+          const arr = Array.from(map.values());
+          localStorage.setItem('animezona_fav_objects', JSON.stringify(arr));
+          return arr;
+        });
+      }
+
+      // 2. Update secret objects
+      const newSecretObjects = valid.filter((v) => cleanSecrets.includes(String(v.id)));
+      if (newSecretObjects.length > 0) {
+        setSecretAnimesData((prev) => {
+          const map = new Map<string, MappedAnime>();
+          [...prev, ...newSecretObjects].forEach((a) => {
+            if (a && a.id) map.set(String(a.id), a);
+          });
+          const arr = Array.from(map.values());
+          localStorage.setItem('animezona_secret_objects', JSON.stringify(arr));
+          return arr;
+        });
+      }
+
+      // 3. Update hidden data map
+      const newHiddenObjects = valid.filter((v) => cleanHidden.includes(String(v.id)));
+      if (newHiddenObjects.length > 0) {
+        setHiddenDataMap((prev) => {
+          const updated = { ...prev };
+          newHiddenObjects.forEach((v) => {
+            updated[String(v.id)] = { title: v.title, image: v.image };
+          });
+          localStorage.setItem('animezona_hidden_map', JSON.stringify(updated));
+          return updated;
+        });
+      }
+    });
+
+    return () => {
+      isMounted = false;
+    };
+  }, [favorites, secretFavorites, hiddenRecommendations]);
 
   // Always scroll to top when changing active tab or selecting an anime
   useEffect(() => {
@@ -794,20 +909,33 @@ export default function App() {
   };
 
   // Toggle Favorite & 5-Second Long Press for Secret Favorites
-  const handleLikeTouchStart = (animeId: string | number) => {
-    if (!checkAuthOrPrompt('guardar en tus Favoritos')) return;
+  const handleLikeTouchStart = (animeOrId: MappedAnime | string | number) => {
     isSecretLongPressRef.current = false;
     pressTimerRef.current = setTimeout(() => {
       isSecretLongPressRef.current = true;
-      const idStr = String(animeId);
-      const updatedSecret = secretFavorites.includes(idStr)
-        ? secretFavorites
-        : [...secretFavorites, idStr];
+      const animeObj = typeof animeOrId === 'object' && animeOrId !== null ? animeOrId : findAnimeInCache(animeOrId);
+      const idStr = String(animeObj ? animeObj.id : animeOrId).trim();
+      if (!idStr || idStr === '[object Object]') return;
+
+      const cleanSecrets = cleanIdList(secretFavorites);
+      const updatedSecret = cleanSecrets.includes(idStr) ? cleanSecrets : [...cleanSecrets, idStr];
       saveSecretFavorites(updatedSecret);
-      const updatedNormal = favorites.filter((id) => id !== idStr);
+
+      if (animeObj && animeObj.title && !animeObj.title.startsWith('Anime #')) {
+        saveSecretAnimeObject(animeObj);
+      } else {
+        api.getAnimeInfo(idStr).then((info) => {
+          if (info && info.title && !info.title.startsWith('Anime #')) {
+            saveSecretAnimeObject(info);
+          }
+        });
+      }
+
+      const cleanNormal = cleanIdList(favorites);
+      const updatedNormal = cleanNormal.filter((id) => id !== idStr);
       saveFavorites(updatedNormal);
       if (navigator.vibrate) navigator.vibrate(100);
-      showToast('Listo :)');
+      showToast('Enviado a Zona Secreta ★');
     }, 5000);
   };
 
@@ -832,7 +960,6 @@ export default function App() {
       if (e.preventDefault) e.preventDefault();
       if (e.stopPropagation) e.stopPropagation();
     }
-    if (!checkAuthOrPrompt('guardar en tus Favoritos')) return;
 
     let animeId: string | number;
     let animeObj: MappedAnime | undefined;
@@ -842,21 +969,21 @@ export default function App() {
       animeObj = anime;
     } else {
       animeId = anime;
-      animeObj = [...trendingAnimes, ...topAnimes, ...catalogAnimes, ...relatedAnimes, ...favoriteAnimesData].find(
-        (a) => String(a.id) === String(animeId)
-      );
+      animeObj = findAnimeInCache(anime);
     }
 
     const idStr = String(animeId).trim();
+    if (!idStr || idStr === '[object Object]') return;
+
     const isFav = isAnimeFavorited(animeObj || { id: idStr });
+    const cleanCurrent = cleanIdList(favorites);
 
     let updatedFavorites: string[];
     if (isFav) {
       const titleLower = animeObj?.title?.trim().toLowerCase();
-      updatedFavorites = favorites.filter((f) => {
-        const fStr = String(f).trim();
-        if (fStr === idStr) return false;
-        if (titleLower && fStr.toLowerCase() === titleLower) return false;
+      updatedFavorites = cleanCurrent.filter((f) => {
+        if (f === idStr) return false;
+        if (titleLower && f.toLowerCase() === titleLower) return false;
         return true;
       });
       const updatedData = favoriteAnimesData.filter((a) => {
@@ -868,8 +995,8 @@ export default function App() {
       localStorage.setItem('animezona_fav_objects', JSON.stringify(updatedData));
       showToast('Eliminado de Favoritos');
     } else {
-      updatedFavorites = [...favorites.filter((f) => String(f).trim() !== idStr), idStr];
-      if (animeObj) {
+      updatedFavorites = [...cleanCurrent.filter((f) => f !== idStr), idStr];
+      if (animeObj && animeObj.title && !animeObj.title.startsWith('Anime #')) {
         const updatedData = [
           ...favoriteAnimesData.filter((a) => String(a.id).trim() !== idStr),
           animeObj
@@ -878,7 +1005,7 @@ export default function App() {
         localStorage.setItem('animezona_fav_objects', JSON.stringify(updatedData));
       } else {
         api.getAnimeInfo(idStr).then((info) => {
-          if (info) {
+          if (info && info.title && !info.title.startsWith('Anime #')) {
             setFavoriteAnimesData((prev) => {
               const u = [...prev.filter((a) => String(a.id).trim() !== idStr), info];
               localStorage.setItem('animezona_fav_objects', JSON.stringify(u));
@@ -920,24 +1047,18 @@ export default function App() {
   // Hide Recommendation: stores ID and metadata so it NEVER gets stuck or shows broken image
   const hideRecommendation = (animeOrId: MappedAnime | string | number, e?: React.MouseEvent) => {
     if (e) e.stopPropagation();
-    const animeId = typeof animeOrId === 'object' && animeOrId !== null ? animeOrId.id : animeOrId;
-    const idStr = String(animeId);
+    const animeObj = typeof animeOrId === 'object' && animeOrId !== null ? animeOrId : findAnimeInCache(animeOrId);
+    const animeId = animeObj ? animeObj.id : animeOrId;
+    const idStr = String(animeId).trim();
     if (!idStr || idStr === '[object Object]') return;
 
-    const foundObj: MappedAnime | undefined =
-      typeof animeOrId === 'object' && animeOrId !== null
-        ? animeOrId
-        : [...trendingAnimes, ...topAnimes, ...catalogAnimes, ...relatedAnimes, ...favoriteAnimesData].find(
-            (a) => String(a.id) === idStr
-          );
-
-    if (foundObj) {
-      const updatedMap = { ...hiddenDataMap, [idStr]: { title: foundObj.title, image: foundObj.image } };
+    if (animeObj && animeObj.title && !animeObj.title.startsWith('Anime #')) {
+      const updatedMap = { ...hiddenDataMap, [idStr]: { title: animeObj.title, image: animeObj.image } };
       setHiddenDataMap(updatedMap);
       localStorage.setItem('animezona_hidden_map', JSON.stringify(updatedMap));
     } else {
       api.getAnimeInfo(idStr).then((info) => {
-        if (info) {
+        if (info && info.title && !info.title.startsWith('Anime #')) {
           setHiddenDataMap((prev) => {
             const u = { ...prev, [idStr]: { title: info.title, image: info.image } };
             localStorage.setItem('animezona_hidden_map', JSON.stringify(u));
@@ -947,8 +1068,9 @@ export default function App() {
       });
     }
 
-    if (!hiddenRecommendations.includes(idStr)) {
-      const updated = [...hiddenRecommendations, idStr];
+    const cleanHidden = cleanIdList(hiddenRecommendations);
+    if (!cleanHidden.includes(idStr)) {
+      const updated = [...cleanHidden, idStr];
       saveHidden(updated);
     }
     showToast('Recomendación oculta (Ver en Perfil > Animes Ocultos)');
@@ -1138,13 +1260,17 @@ export default function App() {
   };
 
   const handleToggleAnimeInList = (listId: string, animeId: string | number) => {
-    if (!checkAuthOrPrompt('agregar animes a tus listas')) return;
+    const cleanId = typeof animeId === 'object' && animeId !== null ? (animeId as any).id : animeId;
+    const idStr = String(cleanId).trim();
+    if (!idStr || idStr === '[object Object]') return;
+
     const updated = customLists.map((l) => {
       if (l.id === listId) {
-        const has = l.animeIds.includes(animeId);
+        const cleanIds = (l.animeIds || []).map((id) => String(id));
+        const has = cleanIds.includes(idStr);
         return {
           ...l,
-          animeIds: has ? l.animeIds.filter((id) => id !== animeId) : [...l.animeIds, animeId]
+          animeIds: has ? cleanIds.filter((id) => id !== idStr) : [...cleanIds, idStr]
         };
       }
       return l;
@@ -1154,12 +1280,11 @@ export default function App() {
   };
 
   const handleCreateList = () => {
-    if (!checkAuthOrPrompt('crear listas personalizadas')) return;
     if (!newListName.trim()) return;
     const newList = {
       id: `list-${Date.now()}`,
       name: newListName.trim(),
-      animeIds: selectedAnime ? [selectedAnime.id] : []
+      animeIds: selectedAnime ? [String(selectedAnime.id)] : []
     };
     saveCustomLists([...customLists, newList]);
     setNewListName('');
@@ -1886,7 +2011,7 @@ export default function App() {
                       onMouseDown={(e) => {
                         e.preventDefault();
                         e.stopPropagation();
-                        handleLikeTouchStart(selectedAnime.id);
+                        handleLikeTouchStart(selectedAnime);
                       }}
                       onMouseUp={(e) => {
                         e.preventDefault();
@@ -1895,7 +2020,7 @@ export default function App() {
                       }}
                       onTouchStart={(e) => {
                         e.stopPropagation();
-                        handleLikeTouchStart(selectedAnime.id);
+                        handleLikeTouchStart(selectedAnime);
                       }}
                       onTouchEnd={(e) => {
                         e.preventDefault();
@@ -1913,11 +2038,7 @@ export default function App() {
                     </button>
 
                     <button
-                      onClick={() => {
-                        if (checkAuthOrPrompt('crear y agregar a tus listas')) {
-                          setShowAddToListModal(true);
-                        }
-                      }}
+                      onClick={() => setShowAddToListModal(true)}
                       className="bg-[#1e293b] text-slate-200 border border-slate-700 px-3 py-0.8 rounded-full text-xs font-semibold flex items-center gap-1.5 transition hover:bg-[#25334a]"
                     >
                       <Plus className="w-3.5 h-3.5 text-[#a855f7]" />
@@ -2211,7 +2332,7 @@ export default function App() {
                           onMouseDown={(e) => {
                             e.preventDefault();
                             e.stopPropagation();
-                            handleLikeTouchStart(anime.id);
+                            handleLikeTouchStart(anime);
                           }}
                           onMouseUp={(e) => {
                             e.preventDefault();
@@ -2220,7 +2341,7 @@ export default function App() {
                           }}
                           onTouchStart={(e) => {
                             e.stopPropagation();
-                            handleLikeTouchStart(anime.id);
+                            handleLikeTouchStart(anime);
                           }}
                           onTouchEnd={(e) => {
                             e.preventDefault();
@@ -2331,7 +2452,7 @@ export default function App() {
                         onMouseDown={(e) => {
                           e.preventDefault();
                           e.stopPropagation();
-                          handleLikeTouchStart(anime.id);
+                          handleLikeTouchStart(anime);
                         }}
                         onMouseUp={(e) => {
                           e.preventDefault();
@@ -2340,7 +2461,7 @@ export default function App() {
                         }}
                         onTouchStart={(e) => {
                           e.stopPropagation();
-                          handleLikeTouchStart(anime.id);
+                          handleLikeTouchStart(anime);
                         }}
                         onTouchEnd={(e) => {
                           e.preventDefault();
@@ -2399,7 +2520,7 @@ export default function App() {
                             onMouseDown={(e) => {
                               e.preventDefault();
                               e.stopPropagation();
-                              handleLikeTouchStart(relAnime.id);
+                              handleLikeTouchStart(relAnime);
                             }}
                             onMouseUp={(e) => {
                               e.preventDefault();
@@ -2408,7 +2529,7 @@ export default function App() {
                             }}
                             onTouchStart={(e) => {
                               e.stopPropagation();
-                              handleLikeTouchStart(relAnime.id);
+                              handleLikeTouchStart(relAnime);
                             }}
                             onTouchEnd={(e) => {
                               e.preventDefault();
@@ -2474,46 +2595,39 @@ export default function App() {
                 </div>
               ) : (
                 <div className="grid grid-cols-2 gap-3">
-                  {favorites.map((favId, idx) => {
-                    const cleanId = typeof favId === 'object' && favId !== null ? String((favId as any).id || idx) : String(favId);
+                  {cleanIdList(favorites).map((favId, idx) => {
+                    const cleanId = String(favId).trim();
                     const anime =
                       favoriteAnimesData.find((a) => String(a.id) === cleanId) ||
-                      [...trendingAnimes, ...topAnimes, ...catalogAnimes, ...relatedAnimes].find(
-                        (a) => String(a.id) === cleanId
-                      ) || {
-                        id: cleanId,
-                        title: cleanId.startsWith('custom-') ? 'Anime Favorito' : cleanId,
-                        image: 'https://images.unsplash.com/photo-1578632767115-351597cf2477?w=500&q=80',
-                        type: 'Anime',
-                        score: '9.0',
-                        description: '',
-                        genres: ['Anime'],
-                        status: 'En emisión',
-                        isCustom: false,
-                        totalEpisodes: 12
-                      };
+                      findAnimeInCache(cleanId);
 
                     return (
                       <div
-                        key={`fav-card-${anime.id}-${idx}`}
+                        key={`fav-card-${cleanId}-${idx}`}
                         className="bg-[#121620] border border-[#1e2433] rounded-xl overflow-hidden relative group active:scale-98 transition flex flex-col"
                       >
-                        <div onClick={() => openAnimeDetails(anime)} className="cursor-pointer flex-1 flex flex-col">
+                        <div onClick={() => anime && openAnimeDetails(anime)} className="cursor-pointer flex-1 flex flex-col">
                           <div className="aspect-[2/3] relative overflow-hidden bg-black">
                             <img
-                              src={anime.image}
-                              alt={anime.title}
+                              src={anime?.image || 'https://images.unsplash.com/photo-1578632767115-351597cf2477?w=500&q=80'}
+                              alt={anime?.title || 'Anime'}
                               className="w-full h-full object-cover group-hover:scale-105 transition duration-300"
+                              loading="lazy"
                             />
+                            {!anime && (
+                              <div className="absolute inset-0 bg-black/60 flex items-center justify-center">
+                                <RefreshCw className="w-5 h-5 animate-spin text-[#a855f7]" />
+                              </div>
+                            )}
                           </div>
                           <div className="p-2">
-                            <h5 className="text-xs font-bold text-white line-clamp-1">{anime.title}</h5>
-                            <span className="text-[10px] text-slate-400">{anime.type || 'Anime'}</span>
+                            <h5 className="text-xs font-bold text-white line-clamp-1">{anime?.title || 'Cargando...'}</h5>
+                            <span className="text-[10px] text-slate-400">{anime?.type || 'Anime'}</span>
                           </div>
                         </div>
 
                         <button
-                          onClick={(e) => toggleFavorite(anime, e)}
+                          onClick={(e) => toggleFavorite(anime || cleanId, e)}
                           title="Quitar de favoritos"
                           className="absolute top-2 right-2 p-1.5 rounded-full bg-black/70 hover:bg-rose-900 text-rose-400 transition"
                         >
@@ -2600,19 +2714,35 @@ export default function App() {
                     </div>
                   ) : (
                     <div className="grid grid-cols-2 gap-3">
-                      {secretFavorites.map((id) => {
-                        const anime = [...trendingAnimes, ...catalogAnimes, ...secretAnimes].find((a) => String(a.id) === id);
+                      {cleanIdList(secretFavorites).map((id, idx) => {
+                        const cleanId = String(id).trim();
+                        const anime =
+                          secretAnimesData.find((a) => String(a.id) === cleanId) ||
+                          findAnimeInCache(cleanId);
                         return (
-                          <div key={id} className="bg-[#121620] border border-purple-900/40 rounded-xl overflow-hidden relative group">
+                          <div key={`secret-fav-${cleanId}-${idx}`} className="bg-[#121620] border border-purple-900/40 rounded-xl overflow-hidden relative group">
                             <div onClick={() => anime && openAnimeDetails(anime)} className="cursor-pointer">
-                              <img src={anime?.image || 'https://via.placeholder.com/150'} alt="Anime" className="w-full aspect-[2/3] object-cover" />
+                              <div className="aspect-[2/3] relative overflow-hidden bg-black">
+                                <img
+                                  src={anime?.image || 'https://images.unsplash.com/photo-1578632767115-351597cf2477?w=500&q=80'}
+                                  alt={anime?.title || 'Anime'}
+                                  className="w-full h-full object-cover group-hover:scale-105 transition"
+                                  loading="lazy"
+                                />
+                                {!anime && (
+                                  <div className="absolute inset-0 bg-black/60 flex items-center justify-center">
+                                    <RefreshCw className="w-4 h-4 animate-spin text-[#a855f7]" />
+                                  </div>
+                                )}
+                              </div>
                               <div className="p-2">
-                                <h5 className="text-xs font-bold text-white truncate">{anime?.title || `ID: ${id}`}</h5>
+                                <h5 className="text-xs font-bold text-white truncate">{anime?.title || 'Cargando anime...'}</h5>
+                                <span className="text-[10px] text-[#a855f7] font-semibold">★ Secreto</span>
                               </div>
                             </div>
 
                             <button
-                              onClick={() => setSecretRestoreConfirmId(id)}
+                              onClick={() => setSecretRestoreConfirmId(cleanId)}
                               title="Devolver a la normalidad"
                               className="absolute top-2 right-2 bg-purple-950/80 hover:bg-purple-900 border border-purple-700/60 p-1.5 rounded-full text-purple-300 hover:text-white transition"
                             >
@@ -3084,13 +3214,9 @@ export default function App() {
 
                           {(l.animeIds || []).length > 0 && (
                             <div className="grid grid-cols-3 gap-2 pt-1">
-                              {(l.animeIds || []).map((rawId, aIdx) => {
-                                const animeId = typeof rawId === 'object' && rawId !== null ? (rawId as any).id : rawId;
-                                const anime =
-                                  favoriteAnimesData.find((a) => String(a.id) === String(animeId)) ||
-                                  [...trendingAnimes, ...topAnimes, ...catalogAnimes, ...relatedAnimes].find(
-                                    (a) => String(a.id) === String(animeId)
-                                  );
+                              {cleanIdList(l.animeIds).map((rawId, aIdx) => {
+                                const animeId = String(rawId).trim();
+                                const anime = findAnimeInCache(animeId);
                                 if (!anime) return null;
                                 return (
                                   <div
@@ -3098,7 +3224,7 @@ export default function App() {
                                     onClick={() => openAnimeDetails(anime)}
                                     className="cursor-pointer relative group aspect-[2/3] rounded-lg overflow-hidden bg-black active:scale-95 transition"
                                   >
-                                    <img src={anime.image} alt={anime.title} className="w-full h-full object-cover" />
+                                    <img src={anime.image} alt={anime.title} className="w-full h-full object-cover" loading="lazy" />
                                   </div>
                                 );
                               })}
@@ -3123,12 +3249,12 @@ export default function App() {
                         </div>
                       ) : (
                         <div className="space-y-2">
-                          {hiddenRecommendations.map((rawId, idx) => {
-                            const id = typeof rawId === 'object' && rawId !== null ? String((rawId as any).id) : String(rawId);
-                            const anime =
-                              (hiddenDataMap && hiddenDataMap[id]) ||
-                              favoriteAnimesData.find((a) => String(a.id) === id) ||
-                              [...trendingAnimes, ...topAnimes, ...catalogAnimes, ...relatedAnimes].find((a) => String(a.id) === id);
+                          {cleanIdList(hiddenRecommendations).map((rawId, idx) => {
+                            const id = String(rawId).trim();
+                            const meta = hiddenDataMap[id];
+                            const anime = meta && !meta.title.startsWith('Anime #')
+                              ? { id, title: meta.title, image: meta.image }
+                              : findAnimeInCache(id);
 
                             return (
                               <div
@@ -3140,10 +3266,14 @@ export default function App() {
                                     src={anime?.image || 'https://images.unsplash.com/photo-1578632767115-351597cf2477?w=200&q=80'}
                                     alt="Anime"
                                     className="w-10 h-14 rounded object-cover bg-black shrink-0"
+                                    loading="lazy"
                                   />
-                                  <span className="text-xs font-bold text-white truncate">
-                                    {anime?.title || `Anime #${id}`}
-                                  </span>
+                                  <div className="min-w-0">
+                                    <span className="text-xs font-bold text-white truncate block">
+                                      {anime?.title || 'Anime Oculto'}
+                                    </span>
+                                    <span className="text-[10px] text-slate-400">Oculto de recomendaciones</span>
+                                  </div>
                                 </div>
                                 <button
                                   onClick={() => restoreRecommendation(id)}
@@ -3195,7 +3325,12 @@ export default function App() {
 
         {/* MODAL 1: EDITAR PERFIL */}
         {showEditProfileModal && (
-          <div className="fixed inset-0 z-50 bg-black/90 backdrop-blur-md flex items-center justify-center p-4 animate-fade-in">
+          <div
+            onClick={(e) => {
+              if (e.target === e.currentTarget) setShowEditProfileModal(false);
+            }}
+            className="fixed inset-0 z-50 bg-black/90 backdrop-blur-md flex items-center justify-center p-4 animate-fade-in"
+          >
             <div className="bg-[#121620] border border-[#1e2433] rounded-3xl p-6 max-w-[340px] w-full space-y-5 shadow-2xl">
               <h3 className="text-xl font-bold text-white">Editar Perfil</h3>
 
@@ -3259,7 +3394,12 @@ export default function App() {
 
         {/* MODAL 2: AÑADIR A LISTAS */}
         {showAddToListModal && selectedAnime && (
-          <div className="fixed inset-0 z-50 bg-black/85 backdrop-blur-sm flex items-center justify-center p-4 animate-fade-in">
+          <div
+            onClick={(e) => {
+              if (e.target === e.currentTarget) setShowAddToListModal(false);
+            }}
+            className="fixed inset-0 z-50 bg-black/85 backdrop-blur-sm flex items-center justify-center p-4 animate-fade-in"
+          >
             <div className="bg-[#121620] border border-[#1e2433] rounded-3xl p-5 max-w-[320px] w-full space-y-4 shadow-2xl">
               <div className="flex items-center justify-between">
                 <h4 className="text-sm font-bold text-white flex items-center gap-2">
@@ -3277,7 +3417,7 @@ export default function App() {
 
               <div className="space-y-2 max-h-48 overflow-y-auto no-scrollbar">
                 {customLists.map((l) => {
-                  const isInList = l.animeIds.includes(selectedAnime.id);
+                  const isInList = (l.animeIds || []).map(String).includes(String(selectedAnime.id));
                   return (
                     <div
                       key={l.id}
@@ -3325,7 +3465,12 @@ export default function App() {
 
         {/* MODAL 3: REQUIERE INICIAR SESIÓN PARA GUARDAR */}
         {showAuthRequiredModal && (
-          <div className="fixed inset-0 z-50 bg-black/90 backdrop-blur-md flex items-center justify-center p-4 animate-fade-in">
+          <div
+            onClick={(e) => {
+              if (e.target === e.currentTarget) setShowAuthRequiredModal(null);
+            }}
+            className="fixed inset-0 z-50 bg-black/90 backdrop-blur-md flex items-center justify-center p-4 animate-fade-in"
+          >
             <div className="bg-[#121620] border border-[#7c3aed] rounded-3xl p-6 max-w-[300px] w-full text-center space-y-4 shadow-2xl">
               <div className="w-12 h-12 rounded-full bg-[#7c3aed]/20 text-[#a855f7] flex items-center justify-center mx-auto">
                 <User className="w-6 h-6" />
@@ -3359,7 +3504,12 @@ export default function App() {
 
         {/* MODAL 4: CONFIRMACIÓN DE RESTAURAR FAVORITO SECRETO */}
         {secretRestoreConfirmId && (
-          <div className="fixed inset-0 z-50 bg-black/85 backdrop-blur-sm flex items-center justify-center p-4 animate-fade-in">
+          <div
+            onClick={(e) => {
+              if (e.target === e.currentTarget) setSecretRestoreConfirmId(null);
+            }}
+            className="fixed inset-0 z-50 bg-black/85 backdrop-blur-sm flex items-center justify-center p-4 animate-fade-in"
+          >
             <div className="bg-[#121620] border border-purple-800 rounded-2xl p-5 max-w-[280px] w-full text-center space-y-3">
               <h4 className="text-sm font-bold text-white">¿Devolver a favoritos normales?</h4>
               <p className="text-xs text-slate-300">
@@ -3385,7 +3535,12 @@ export default function App() {
 
         {/* MODAL 5: SACAR ANIME DEL CATÁLOGO SECRETO */}
         {secretRemoveAnimeTarget && (
-          <div className="fixed inset-0 z-50 bg-black/85 backdrop-blur-sm flex items-center justify-center p-4 animate-fade-in">
+          <div
+            onClick={(e) => {
+              if (e.target === e.currentTarget) setSecretRemoveAnimeTarget(null);
+            }}
+            className="fixed inset-0 z-50 bg-black/85 backdrop-blur-sm flex items-center justify-center p-4 animate-fade-in"
+          >
             <div className="bg-[#121620] border border-purple-800 rounded-2xl p-5 max-w-[290px] w-full text-center space-y-3">
               <h4 className="text-sm font-bold text-white">¿Sacar del catálogo secreto?</h4>
               <p className="text-xs text-slate-300">
@@ -3411,7 +3566,12 @@ export default function App() {
 
         {/* MODAL 6: CONFIRMACIÓN CERRAR SESIÓN */}
         {showLogoutConfirm && (
-          <div className="fixed inset-0 z-50 bg-black/85 backdrop-blur-sm flex items-center justify-center p-4 animate-fade-in">
+          <div
+            onClick={(e) => {
+              if (e.target === e.currentTarget) setShowLogoutConfirm(false);
+            }}
+            className="fixed inset-0 z-50 bg-black/85 backdrop-blur-sm flex items-center justify-center p-4 animate-fade-in"
+          >
             <div className="bg-[#121620] border border-[#1e2433] rounded-2xl p-5 max-w-[280px] w-full text-center space-y-3">
               <h4 className="text-sm font-bold text-white">¿Cerrar Sesión?</h4>
               <p className="text-xs text-slate-300">
@@ -3437,7 +3597,12 @@ export default function App() {
 
         {/* MODAL 7: TRANSMITIR A SMART TV */}
         {showCastModal && (
-          <div className="fixed inset-0 z-50 bg-black/90 backdrop-blur-md flex items-center justify-center p-4 animate-fade-in">
+          <div
+            onClick={(e) => {
+              if (e.target === e.currentTarget) setShowCastModal(false);
+            }}
+            className="fixed inset-0 z-50 bg-black/90 backdrop-blur-md flex items-center justify-center p-4 animate-fade-in"
+          >
             <div className="bg-[#121620] border border-[#1e2433] rounded-3xl p-5 max-w-[320px] w-full space-y-3.5 shadow-2xl">
               <div className="flex items-center justify-between">
                 <div className="flex items-center gap-2 text-white font-bold text-sm">

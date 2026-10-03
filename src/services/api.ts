@@ -49,56 +49,107 @@ export interface MappedEpisode {
   season_number: number;
 }
 
-// Helpers
-const delay = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
-let lastRequestTime = 0;
-const fetchWithDelay = async (url: string) => {
-  const now = Date.now();
-  const diff = now - lastRequestTime;
-  if (diff < 100) {
-    await delay(100 - diff);
+// Persistent and In-Memory Cache for ultra-fast instant loading (0ms)
+const animeCache = new Map<string, MappedAnime>();
+
+const initCacheFromStorage = () => {
+  try {
+    const raw = typeof localStorage !== 'undefined' ? localStorage.getItem('animezona_global_anime_cache') : null;
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      if (Array.isArray(parsed)) {
+        parsed.forEach((item: MappedAnime) => {
+          if (item && item.id && item.title && !item.title.startsWith('Anime #')) {
+            animeCache.set(String(item.id), item);
+          }
+        });
+      }
+    }
+  } catch {}
+};
+
+if (typeof window !== 'undefined') {
+  initCacheFromStorage();
+}
+
+let syncCacheTimer: any = null;
+const saveCacheToStorage = () => {
+  if (typeof window === 'undefined') return;
+  if (syncCacheTimer) clearTimeout(syncCacheTimer);
+  syncCacheTimer = setTimeout(() => {
+    try {
+      const values = Array.from(animeCache.values()).slice(-250);
+      localStorage.setItem('animezona_global_anime_cache', JSON.stringify(values));
+    } catch {}
+  }, 1000);
+};
+
+export const cacheAnime = (anime: MappedAnime) => {
+  if (!anime || !anime.id || !anime.title || anime.title.startsWith('Anime #')) return;
+  const idStr = String(anime.id).trim();
+  if (idStr && idStr !== '[object Object]') {
+    animeCache.set(idStr, anime);
+    saveCacheToStorage();
   }
-  lastRequestTime = Date.now();
+};
+
+export const getCachedAnime = (id: string | number): MappedAnime | undefined => {
+  const idStr = String(id).trim();
+  return animeCache.get(idStr);
+};
+
+// Fast non-blocking fetcher with error resilience
+const fetchWithDelay = async (url: string) => {
   const res = await fetch(url);
   if (!res.ok) throw new Error(`HTTP error ${res.status}`);
   return res.json();
 };
 
-const mapAnimeData = (item: any): MappedAnime => ({
-  id: item.id,
-  title: item.name || item.original_name || item.title || 'Sin Título',
-  image: item.poster_path
-    ? `https://image.tmdb.org/t/p/w500${item.poster_path}`
-    : 'https://images.unsplash.com/photo-1578632767115-351597cf2477?w=500&q=80',
-  banner: item.backdrop_path
-    ? `https://image.tmdb.org/t/p/w1280${item.backdrop_path}`
-    : item.poster_path
-    ? `https://image.tmdb.org/t/p/w1280${item.poster_path}`
-    : 'https://images.unsplash.com/photo-1534447677768-be436bb09401?w=1200&q=80',
-  score: item.vote_average ? Number(item.vote_average).toFixed(1) : '9.0',
-  totalEpisodes: item.number_of_episodes || 12,
-  episodes: item.number_of_episodes || 12,
-  type: 'TV',
-  description: item.overview || 'Sinopsis no disponible en este momento.',
-  genres: item.genres ? item.genres.map((g: any) => g.name) : ['Anime', 'Acción'],
-  status: item.status === 'Ended' ? 'Finalizado' : 'En emisión',
-  isCustom: false
-});
+const mapAnimeData = (item: any): MappedAnime => {
+  const mapped: MappedAnime = {
+    id: item.id,
+    title: item.name || item.original_name || item.title || item.original_title || 'Sin Título',
+    image: item.poster_path
+      ? `https://image.tmdb.org/t/p/w500${item.poster_path}`
+      : 'https://images.unsplash.com/photo-1578632767115-351597cf2477?w=500&q=80',
+    banner: item.backdrop_path
+      ? `https://image.tmdb.org/t/p/w1280${item.backdrop_path}`
+      : item.poster_path
+      ? `https://image.tmdb.org/t/p/w1280${item.poster_path}`
+      : 'https://images.unsplash.com/photo-1534447677768-be436bb09401?w=1200&q=80',
+    score: item.vote_average ? Number(item.vote_average).toFixed(1) : '9.0',
+    totalEpisodes: item.number_of_episodes || 12,
+    episodes: item.number_of_episodes || 12,
+    type: item.type || (item.number_of_episodes ? 'TV' : 'Anime'),
+    description: item.overview || 'Sinopsis no disponible en este momento.',
+    genres: item.genres
+      ? item.genres.map((g: any) => (typeof g === 'object' && g.name ? g.name : String(g)))
+      : ['Anime', 'Acción'],
+    status: item.status === 'Ended' ? 'Finalizado' : 'En emisión',
+    isCustom: false
+  };
+  cacheAnime(mapped);
+  return mapped;
+};
 
-const mapCustomAnime = (item: any): MappedAnime => ({
-  id: item.id,
-  title: item.title,
-  image: item.image || 'https://images.unsplash.com/photo-1578632767115-351597cf2477?w=500&q=80',
-  banner: item.image || 'https://images.unsplash.com/photo-1534447677768-be436bb09401?w=1200&q=80',
-  score: item.score || '9.5',
-  totalEpisodes: item.total_episodes || 12,
-  episodes: item.total_episodes || 12,
-  type: 'TV',
-  description: item.description || 'Sinopsis agregada por la comunidad AnimeZona.',
-  genres: item.genres || ['Anime'],
-  status: item.status || 'En emisión',
-  isCustom: true
-});
+const mapCustomAnime = (item: any): MappedAnime => {
+  const mapped: MappedAnime = {
+    id: item.id,
+    title: item.title,
+    image: item.image || 'https://images.unsplash.com/photo-1578632767115-351597cf2477?w=500&q=80',
+    banner: item.image || 'https://images.unsplash.com/photo-1534447677768-be436bb09401?w=1200&q=80',
+    score: item.score || '9.5',
+    totalEpisodes: item.total_episodes || 12,
+    episodes: item.total_episodes || 12,
+    type: 'TV',
+    description: item.description || 'Sinopsis agregada por la comunidad AnimeZona.',
+    genres: item.genres || ['Anime'],
+    status: item.status || 'En emisión',
+    isCustom: true
+  };
+  cacheAnime(mapped);
+  return mapped;
+};
 
 export const api = {
   // Get custom animes from Supabase
@@ -110,7 +161,9 @@ export const api = {
       }
       const { data, error } = await query;
       if (error || !data) return [];
-      return data.map(mapCustomAnime);
+      const mapped = data.map(mapCustomAnime);
+      mapped.forEach(cacheAnime);
+      return mapped;
     } catch (e) {
       console.error('Error fetching custom animes from supabase:', e);
       return [];
@@ -125,7 +178,9 @@ export const api = {
         .select('*')
         .eq('is_secret', true);
       if (error || !data) return [];
-      return data.map(mapCustomAnime);
+      const mapped = data.map(mapCustomAnime);
+      mapped.forEach(cacheAnime);
+      return mapped;
     } catch (e) {
       return [];
     }
@@ -242,7 +297,9 @@ export const api = {
         const url = `${BASE_URL}/tv/${idStr}/recommendations?api_key=${TMDB_API_KEY}&language=es-MX&page=1`;
         const res = await fetchWithDelay(url);
         if (res?.results && res.results.length > 0) {
-          return res.results.slice(0, 8).map(mapAnimeData);
+          const list = res.results.slice(0, 8).map(mapAnimeData);
+          list.forEach(cacheAnime);
+          return list;
         }
       }
       // If custom or recommendations empty, provide related custom animes
@@ -255,53 +312,101 @@ export const api = {
     }
   },
 
-  // Anime Info / Details: Supports Supabase custom animes (by id or title), TMDB id, and TMDB search
+  // Anime Info / Details: Supports cache (0ms), TMDB TV & Movie by ID, and Supabase custom animes
   getAnimeInfo: async (id: string | number): Promise<MappedAnime> => {
     const idStr = String(id).trim();
+    if (!idStr || idStr === '[object Object]') {
+      return {
+        id: '0',
+        title: 'Anime',
+        image: 'https://images.unsplash.com/photo-1578632767115-351597cf2477?w=500&q=80',
+        score: '9.0',
+        totalEpisodes: 12,
+        type: 'TV',
+        description: '',
+        genres: ['Anime'],
+        status: 'En emisión',
+        isCustom: false
+      };
+    }
+
+    // 1. FAST PATH: Check memory and local storage cache (0ms)
+    const cached = animeCache.get(idStr);
+    if (cached && cached.title && !cached.title.startsWith('Anime #')) {
+      return cached;
+    }
+
     const fallbackObj: MappedAnime = {
       id: idStr,
-      title: idStr.startsWith('custom-') ? 'Anime Especial' : idStr,
+      title: idStr.startsWith('custom-') ? 'Anime Especial' : `Anime #${idStr}`,
       image: 'https://images.unsplash.com/photo-1578632767115-351597cf2477?w=500&q=80',
       score: '9.0',
       totalEpisodes: 12,
       type: 'TV',
-      description: 'Anime añadido a tu colección de favoritos.',
+      description: 'Anime añadido a tu colección.',
       genres: ['Anime'],
       status: 'En emisión',
-      isCustom: false
+      isCustom: idStr.startsWith('custom-')
     };
 
-    if (!idStr) return fallbackObj;
-
     try {
-      // 1. Check custom_animes in Supabase (by ID or title match)
+      // 2. Custom Anime by ID in Supabase
       if (idStr.startsWith('custom-')) {
         const { data } = await supabase.from('custom_animes').select('*').eq('id', idStr).maybeSingle();
-        if (data) return mapCustomAnime(data);
+        if (data) {
+          const mapped = mapCustomAnime(data);
+          cacheAnime(mapped);
+          return mapped;
+        }
+        return fallbackObj;
+      }
+
+      // 3. Purely Numeric ID: TMDB TV or Movie
+      if (/^\d+$/.test(idStr)) {
+        // Try TMDB TV endpoint
+        try {
+          const url = `${BASE_URL}/tv/${idStr}?api_key=${TMDB_API_KEY}&language=es-MX`;
+          const data = await fetchWithDelay(url);
+          if (data && (data.name || data.original_name || data.title)) {
+            const mapped = mapAnimeData(data);
+            cacheAnime(mapped);
+            return mapped;
+          }
+        } catch {}
+
+        // Try TMDB Movie endpoint (for anime movies)
+        try {
+          const movieUrl = `${BASE_URL}/movie/${idStr}?api_key=${TMDB_API_KEY}&language=es-MX`;
+          const movieData = await fetchWithDelay(movieUrl);
+          if (movieData && (movieData.title || movieData.original_title || movieData.name)) {
+            const mapped = mapAnimeData(movieData);
+            mapped.type = 'Película';
+            cacheAnime(mapped);
+            return mapped;
+          }
+        } catch {}
       } else {
+        // Non-numeric string: check custom animes by title in Supabase
         const { data: byTitle } = await supabase
           .from('custom_animes')
           .select('*')
           .ilike('title', idStr)
           .maybeSingle();
-        if (byTitle) return mapCustomAnime(byTitle);
+        if (byTitle) {
+          const mapped = mapCustomAnime(byTitle);
+          cacheAnime(mapped);
+          return mapped;
+        }
       }
 
-      // 2. If id is purely numeric, fetch from TMDB /tv/{id}
-      if (/^\d+$/.test(idStr)) {
-        try {
-          const url = `${BASE_URL}/tv/${idStr}?api_key=${TMDB_API_KEY}&language=es-MX`;
-          const data = await fetchWithDelay(url);
-          if (data && data.name) return mapAnimeData(data);
-        } catch {}
-      }
-
-      // 3. Fallback search by title on TMDB
+      // 4. Fallback search by title on TMDB
       try {
         const searchUrl = `${BASE_URL}/search/tv?api_key=${TMDB_API_KEY}&language=es-MX&query=${encodeURIComponent(idStr)}&page=1`;
         const searchRes = await fetchWithDelay(searchUrl);
         if (searchRes?.results && searchRes.results.length > 0) {
-          return mapAnimeData(searchRes.results[0]);
+          const mapped = mapAnimeData(searchRes.results[0]);
+          cacheAnime(mapped);
+          return mapped;
         }
       } catch {}
 

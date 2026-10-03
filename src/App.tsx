@@ -1097,11 +1097,21 @@ export default function App() {
     const idStr = String(anime.id).trim();
     const titleLower = anime.title ? anime.title.trim().toLowerCase() : '';
 
-    if (favorites.some((f) => String(f).trim() === idStr)) return true;
+    if (
+      favorites.some((f: any) => {
+        const fId = typeof f === 'object' && f !== null ? String(f.id || '').trim() : String(f).trim();
+        return fId === idStr;
+      })
+    ) return true;
 
     if (titleLower) {
       if (favoriteAnimesData.some((fav) => fav.title && fav.title.trim().toLowerCase() === titleLower)) return true;
-      if (favorites.some((f) => String(f).trim().toLowerCase() === titleLower)) return true;
+      if (
+        favorites.some((f: any) => {
+          const fTitle = typeof f === 'object' && f !== null ? String(f.title || '').trim().toLowerCase() : String(f).trim().toLowerCase();
+          return fTitle === titleLower;
+        })
+      ) return true;
     }
     return false;
   };
@@ -1137,21 +1147,29 @@ export default function App() {
     }, 5000);
   };
 
-  const handleLikeTouchEnd = (anime: MappedAnime | string | number, e?: any) => {
-    if (e) {
-      if (e.preventDefault) e.preventDefault();
-      if (e.stopPropagation) e.stopPropagation();
-    }
+  const cancelLikePress = () => {
     if (pressTimerRef.current) {
       clearTimeout(pressTimerRef.current);
       pressTimerRef.current = null;
     }
+  };
+
+  const handleLikeClick = (anime: MappedAnime | string | number, e?: any) => {
+    if (e) {
+      if (e.preventDefault) e.preventDefault();
+      if (e.stopPropagation) e.stopPropagation();
+    }
+    cancelLikePress();
     if (isSecretLongPressRef.current) {
+      isSecretLongPressRef.current = false;
       return;
     }
-    // Normal like toggle
     toggleFavorite(anime, e);
   };
+
+  const handleLikeTouchEnd = cancelLikePress;
+  const handleLikePointerDown = handleLikeTouchStart;
+  const handleLikePointerUp = cancelLikePress;
 
   const toggleFavorite = (anime: MappedAnime | string | number, e?: any) => {
     if (e) {
@@ -2191,30 +2209,11 @@ export default function App() {
 
                     {/* Me Gusta con soporte para 5 segundos long-press secreto */}
                     <button
-                      onClick={(e) => {
-                        e.preventDefault();
-                        e.stopPropagation();
-                        toggleFavorite(selectedAnime, e);
-                      }}
-                      onMouseDown={(e) => {
-                        e.preventDefault();
-                        e.stopPropagation();
-                        handleLikeTouchStart(selectedAnime);
-                      }}
-                      onMouseUp={(e) => {
-                        e.preventDefault();
-                        e.stopPropagation();
-                        handleLikeTouchEnd(selectedAnime, e);
-                      }}
-                      onTouchStart={(e) => {
-                        e.stopPropagation();
-                        handleLikeTouchStart(selectedAnime);
-                      }}
-                      onTouchEnd={(e) => {
-                        e.preventDefault();
-                        e.stopPropagation();
-                        handleLikeTouchEnd(selectedAnime, e);
-                      }}
+                      onClick={(e) => handleLikeClick(selectedAnime, e)}
+                      onPointerDown={() => handleLikePointerDown(selectedAnime)}
+                      onPointerUp={handleLikePointerUp}
+                      onPointerLeave={handleLikePointerUp}
+                      onPointerCancel={handleLikePointerUp}
                       className={`px-3 py-0.8 rounded-full text-xs font-semibold flex items-center gap-1.5 transition ${
                         isAnimeFavorited(selectedAnime)
                           ? 'bg-[#3b1219] text-[#f87171] border border-[#7f1d1d]/50'
@@ -2550,30 +2549,11 @@ export default function App() {
 
                           {/* Botón Me Gusta */}
                           <button
-                            onClick={(e) => {
-                              e.preventDefault();
-                              e.stopPropagation();
-                              toggleFavorite(anime, e);
-                            }}
-                            onMouseDown={(e) => {
-                              e.preventDefault();
-                              e.stopPropagation();
-                              handleLikeTouchStart(anime);
-                            }}
-                            onMouseUp={(e) => {
-                              e.preventDefault();
-                              e.stopPropagation();
-                              handleLikeTouchEnd(anime, e);
-                            }}
-                            onTouchStart={(e) => {
-                              e.stopPropagation();
-                              handleLikeTouchStart(anime);
-                            }}
-                            onTouchEnd={(e) => {
-                              e.preventDefault();
-                              e.stopPropagation();
-                              handleLikeTouchEnd(anime, e);
-                            }}
+                            onClick={(e) => handleLikeClick(anime, e)}
+                            onPointerDown={() => handleLikePointerDown(anime)}
+                            onPointerUp={handleLikePointerUp}
+                            onPointerLeave={handleLikePointerUp}
+                            onPointerCancel={handleLikePointerUp}
                             title="Me gusta"
                             className="absolute top-2 right-2 p-1.5 rounded-full bg-black/70 hover:bg-black text-white transition active:scale-90 z-20"
                           >
@@ -2674,30 +2654,11 @@ export default function App() {
                       </button>
 
                       <button
-                        onClick={(e) => {
-                          e.preventDefault();
-                          e.stopPropagation();
-                          toggleFavorite(anime, e);
-                        }}
-                        onMouseDown={(e) => {
-                          e.preventDefault();
-                          e.stopPropagation();
-                          handleLikeTouchStart(anime);
-                        }}
-                        onMouseUp={(e) => {
-                          e.preventDefault();
-                          e.stopPropagation();
-                          handleLikeTouchEnd(anime, e);
-                        }}
-                        onTouchStart={(e) => {
-                          e.stopPropagation();
-                          handleLikeTouchStart(anime);
-                        }}
-                        onTouchEnd={(e) => {
-                          e.preventDefault();
-                          e.stopPropagation();
-                          handleLikeTouchEnd(anime, e);
-                        }}
+                        onClick={(e) => handleLikeClick(anime, e)}
+                        onPointerDown={() => handleLikePointerDown(anime)}
+                        onPointerUp={handleLikePointerUp}
+                        onPointerLeave={handleLikePointerUp}
+                        onPointerCancel={handleLikePointerUp}
                         title="Me gusta"
                         className="absolute top-2 right-2 p-1.5 rounded-full bg-black/70 hover:bg-black text-white transition active:scale-90 z-20"
                       >
@@ -2743,30 +2704,11 @@ export default function App() {
                             className="w-full h-full object-cover group-hover:scale-105 transition duration-300"
                           />
                           <button
-                            onClick={(e) => {
-                              e.preventDefault();
-                              e.stopPropagation();
-                              toggleFavorite(relAnime, e);
-                            }}
-                            onMouseDown={(e) => {
-                              e.preventDefault();
-                              e.stopPropagation();
-                              handleLikeTouchStart(relAnime);
-                            }}
-                            onMouseUp={(e) => {
-                              e.preventDefault();
-                              e.stopPropagation();
-                              handleLikeTouchEnd(relAnime, e);
-                            }}
-                            onTouchStart={(e) => {
-                              e.stopPropagation();
-                              handleLikeTouchStart(relAnime);
-                            }}
-                            onTouchEnd={(e) => {
-                              e.preventDefault();
-                              e.stopPropagation();
-                              handleLikeTouchEnd(relAnime, e);
-                            }}
+                            onClick={(e) => handleLikeClick(relAnime, e)}
+                            onPointerDown={() => handleLikePointerDown(relAnime)}
+                            onPointerUp={handleLikePointerUp}
+                            onPointerLeave={handleLikePointerUp}
+                            onPointerCancel={handleLikePointerUp}
                             title="Me gusta"
                             className="absolute top-2 right-2 p-1.5 rounded-full bg-black/70 hover:bg-black text-white transition active:scale-90 z-20"
                           >
@@ -2816,13 +2758,13 @@ export default function App() {
               <div className="flex items-center justify-between">
                 <h3 className="text-sm font-bold text-white flex items-center gap-2">
                   <Heart className="w-4 h-4 text-[#f87171] fill-[#f87171]" />
-                  Mis Favoritos ({favorites.length})
+                  Mis Favoritos ({cleanIdList(favorites).length})
                 </h3>
               </div>
 
-              {loading && favorites.length === 0 ? (
+              {loading && cleanIdList(favorites).length === 0 ? (
                 <AnimeGridSkeleton count={4} />
-              ) : favorites.length === 0 ? (
+              ) : cleanIdList(favorites).length === 0 ? (
                 <div className="bg-[#121620] border border-[#1e2433] rounded-2xl p-6 text-center text-slate-400 text-xs">
                   No has agregado animes a tus favoritos todavía.
                 </div>
@@ -2832,7 +2774,8 @@ export default function App() {
                     const cleanId = String(favId).trim();
                     const anime =
                       favoriteAnimesData.find((a) => String(a.id) === cleanId) ||
-                      findAnimeInCache(cleanId);
+                      findAnimeInCache(cleanId) ||
+                      [...trendingAnimes, ...topAnimes, ...catalogAnimes, ...recentAnimes].find((a) => String(a.id) === cleanId);
 
                     return (
                       <div
@@ -3285,20 +3228,21 @@ export default function App() {
                   {profileSubTab === 'favoritos' && (
                     <div className="space-y-3">
                       <h4 className="text-xs font-bold text-white uppercase tracking-wider">
-                        Favoritos ({favorites.length})
+                        Favoritos ({cleanIdList(favorites).length})
                       </h4>
 
-                      {favorites.length === 0 ? (
+                      {cleanIdList(favorites).length === 0 ? (
                         <div className="bg-[#121620] border border-[#1e2433] rounded-xl p-6 text-center text-slate-400 text-xs">
                           No tienes animes en favoritos todavía.
                         </div>
                       ) : (
                         <div className="grid grid-cols-2 gap-3">
-                          {favorites.map((favId, idx) => {
-                            const cleanId = typeof favId === 'object' && favId !== null ? String((favId as any).id || idx) : String(favId);
+                          {cleanIdList(favorites).map((favId, idx) => {
+                            const cleanId = String(favId).trim();
                             const anime =
                               favoriteAnimesData.find((a) => String(a.id) === cleanId) ||
-                              [...trendingAnimes, ...topAnimes, ...catalogAnimes, ...relatedAnimes].find(
+                              findAnimeInCache(cleanId) ||
+                              [...trendingAnimes, ...topAnimes, ...catalogAnimes, ...recentAnimes, ...relatedAnimes].find(
                                 (a) => String(a.id) === cleanId
                               ) || {
                                 id: cleanId,

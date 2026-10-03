@@ -1705,7 +1705,7 @@ export default function App() {
         } h-[100dvh] max-h-[100dvh] bg-[#0b0e14] flex flex-col transition-all duration-300 relative overflow-hidden`}
       >
         {/* Notch / Status Bar Safe-Area Margin (Tope superior fijo para no tapar reloj y notificaciones del sistema) */}
-        {!currentEpisode && (
+        {!isFullscreenPlayer && (
           <div
             className="w-full shrink-0 bg-[#0b0e14]"
             style={{ height: 'max(env(safe-area-inset-top, 0px), 32px)' }}

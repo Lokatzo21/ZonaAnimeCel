@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="es">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover" />
+    <title>AnimeZona App</title>
+    <meta name="description" content="AnimeZona móvil: streaming de anime con servidores en vivo, catálogo y reproducción continua." />
+    <meta name="theme-color" content="#090d16" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <link rel="icon" type="image/svg+xml" href="/icon.svg" />
+    <link rel="apple-touch-icon" href="/icon.svg" />
+    <link rel="manifest" href="/manifest.json" />
+    <script>
+      // Protection against "Cannot set property fetch of #<Window> which has only a getter"
+      (function() {
+        try {
+          var _f = window.fetch;
+          Object.defineProperty(window, 'fetch', {
+            get: function() {
+              return _f;
+            },
+            set: function(val) {
+              _f = val;
+            },
+            configurable: true,
+            enumerable: true
+          });
+        } catch (e) {}
+      })();
+    </script>
+    <meta property="og:title" content="AnimeZona App" />
+    <meta property="og:description" content="AnimeZona móvil: streaming de anime con servidores en vivo, catálogo y reproducción continua." />
+    <meta property="og:type" content="website" />
+    <meta name="twitter:card" content="summary_large_image" />
+    <script type="module" crossorigin src="/assets/index-BMo0Pans.js"></script>
+    <link rel="stylesheet" crossorigin href="/assets/index-Cr2XRZ03.css">
+  </head>
+  <body class="bg-[#070a12] text-slate-100">
+    <div id="root"></div>
+  </body>
+</html>

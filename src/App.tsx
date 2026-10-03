@@ -842,32 +842,81 @@ export default function App() {
   };
 
   // LocalStorage Persist Helpers (Saved both to app keys and website keys + Supabase user_sync)
-  const saveFavorites = (favs: string[]) => {
-    setFavorites(favs);
-    localStorage.setItem('animezona_favs', JSON.stringify(favs));
-    localStorage.setItem('favoriteAnimes', JSON.stringify(favs));
-    if (userId) syncService.saveUserKey(userId, 'favoriteAnimes', favs);
+  const saveFavorites = (favs: string[], explicitObjects?: any[]) => {
+    const cleanFavIds = cleanIdList(favs);
+    setFavorites(cleanFavIds);
+    localStorage.setItem('animezona_favs', JSON.stringify(cleanFavIds));
+
+    let sourceObjs = explicitObjects && explicitObjects.length > 0 ? explicitObjects : favoriteAnimesData;
+    if (!sourceObjs || sourceObjs.length === 0) {
+      try {
+        const stored = localStorage.getItem('animezona_fav_objects');
+        if (stored) sourceObjs = JSON.parse(stored);
+      } catch {}
+    }
+    sourceObjs = Array.isArray(sourceObjs) ? sourceObjs : [];
+
+    const fullObjects = cleanFavIds.map((id) => {
+      const found = sourceObjs.find((o: any) => String(o?.id).trim() === id) || findAnimeInCache(id);
+      if (found && found.title && !found.title.startsWith('Anime #')) {
+        return {
+          id: String(found.id),
+          title: found.title,
+          image: found.image || (found as any).coverImage || ''
+        };
+      }
+      return { id: String(id) };
+    });
+
+    localStorage.setItem('favoriteAnimes', JSON.stringify(fullObjects));
+    if (userId) syncService.saveUserKey(userId, 'favoriteAnimes', fullObjects);
   };
 
   const saveSecretFavorites = (sf: string[]) => {
-    setSecretFavorites(sf);
-    localStorage.setItem('animezona_secret_favs', JSON.stringify(sf));
-    localStorage.setItem('secretLikes', JSON.stringify(sf));
-    if (userId) syncService.saveUserKey(userId, 'secretLikes', sf);
+    const cleanIds = cleanIdList(sf);
+    setSecretFavorites(cleanIds);
+    localStorage.setItem('animezona_secret_favs', JSON.stringify(cleanIds));
+
+    const sourceObjs = [...secretAnimesData, ...favoriteAnimesData];
+    const fullObjs = cleanIds.map((id) => {
+      const found = sourceObjs.find((o: any) => String(o?.id).trim() === id) || findAnimeInCache(id);
+      if (found && found.title) {
+        return { id: String(found.id), title: found.title, image: found.image || (found as any).coverImage || '' };
+      }
+      return { id: String(id) };
+    });
+
+    localStorage.setItem('secretLikes', JSON.stringify(fullObjs));
+    if (userId) syncService.saveUserKey(userId, 'secretLikes', fullObjs);
   };
 
   const saveHidden = (hidden: string[]) => {
-    setHiddenRecommendations(hidden);
-    localStorage.setItem('animezona_hidden_recommendations', JSON.stringify(hidden));
-    localStorage.setItem('hiddenAnimes', JSON.stringify(hidden));
-    if (userId) syncService.saveUserKey(userId, 'hiddenAnimes', hidden);
+    const cleanIds = cleanIdList(hidden);
+    setHiddenRecommendations(cleanIds);
+    localStorage.setItem('animezona_hidden_recommendations', JSON.stringify(cleanIds));
+
+    const fullObjs = cleanIds.map((id) => {
+      const found = findAnimeInCache(id);
+      if (found && found.title) {
+        return { id: String(found.id), title: found.title, image: found.image || (found as any).coverImage || '' };
+      }
+      return { id: String(id) };
+    });
+
+    localStorage.setItem('hiddenAnimes', JSON.stringify(fullObjs));
+    if (userId) syncService.saveUserKey(userId, 'hiddenAnimes', fullObjs);
   };
 
   const saveContinueWatching = (cw: typeof continueWatching) => {
     setContinueWatching(cw);
     localStorage.setItem('animezona_continue', JSON.stringify(cw));
-    localStorage.setItem('continueWatching', JSON.stringify(cw));
-    if (userId) syncService.saveUserKey(userId, 'continueWatching', cw);
+    const webCw = cw.map((item: any) => ({
+      ...item,
+      id: item.animeId || item.id,
+      timestamp: item.time ?? item.timestamp ?? 0
+    }));
+    localStorage.setItem('continueWatching', JSON.stringify(webCw));
+    if (userId) syncService.saveUserKey(userId, 'continueWatching', webCw);
   };
 
   const saveWatchedAnimes = (wa: MappedAnime[]) => {
@@ -979,6 +1028,7 @@ export default function App() {
     const cleanCurrent = cleanIdList(favorites);
 
     let updatedFavorites: string[];
+    let updatedData: MappedAnime[] = [];
     if (isFav) {
       const titleLower = animeObj?.title?.trim().toLowerCase();
       updatedFavorites = cleanCurrent.filter((f) => {
@@ -986,7 +1036,7 @@ export default function App() {
         if (titleLower && f.toLowerCase() === titleLower) return false;
         return true;
       });
-      const updatedData = favoriteAnimesData.filter((a) => {
+      updatedData = favoriteAnimesData.filter((a) => {
         if (String(a.id).trim() === idStr) return false;
         if (titleLower && a.title && a.title.trim().toLowerCase() === titleLower) return false;
         return true;
@@ -994,21 +1044,29 @@ export default function App() {
       setFavoriteAnimesData(updatedData);
       localStorage.setItem('animezona_fav_objects', JSON.stringify(updatedData));
       showToast('Eliminado de Favoritos');
+      saveFavorites(updatedFavorites, updatedData);
     } else {
       updatedFavorites = [...cleanCurrent.filter((f) => f !== idStr), idStr];
-      if (animeObj && animeObj.title && !animeObj.title.startsWith('Anime #')) {
-        const updatedData = [
+      const targetObj = (animeObj && animeObj.title && !animeObj.title.startsWith('Anime #')) 
+        ? animeObj 
+        : findAnimeInCache(idStr);
+
+      if (targetObj && targetObj.title && !targetObj.title.startsWith('Anime #')) {
+        updatedData = [
           ...favoriteAnimesData.filter((a) => String(a.id).trim() !== idStr),
-          animeObj
+          targetObj
         ];
         setFavoriteAnimesData(updatedData);
         localStorage.setItem('animezona_fav_objects', JSON.stringify(updatedData));
+        saveFavorites(updatedFavorites, updatedData);
       } else {
+        saveFavorites(updatedFavorites);
         api.getAnimeInfo(idStr).then((info) => {
           if (info && info.title && !info.title.startsWith('Anime #')) {
             setFavoriteAnimesData((prev) => {
               const u = [...prev.filter((a) => String(a.id).trim() !== idStr), info];
               localStorage.setItem('animezona_fav_objects', JSON.stringify(u));
+              saveFavorites(updatedFavorites, u);
               return u;
             });
           }
@@ -1016,8 +1074,6 @@ export default function App() {
       }
       showToast('Añadido a Favoritos ❤️');
     }
-
-    saveFavorites(updatedFavorites);
   };
 
   // Restore Secret Favorite back to Normal
@@ -1345,7 +1401,21 @@ export default function App() {
           // Load cloud data from user_sync
           const cloudData = await syncService.loadUserData(data.user.id);
           if (cloudData.favoriteAnimes && Array.isArray(cloudData.favoriteAnimes)) {
-            setFavorites(cloudData.favoriteAnimes);
+            const cleanFavs = cleanIdList(cloudData.favoriteAnimes);
+            const objs = cloudData.favoriteAnimes.filter((item: any) => item && typeof item === 'object' && item.title);
+            if (objs.length > 0) {
+              setFavoriteAnimesData((prev) => {
+                const map = new Map<string, MappedAnime>();
+                [...prev, ...objs].forEach((a) => {
+                  if (a && a.id) map.set(String(a.id), a);
+                });
+                const arr = Array.from(map.values());
+                localStorage.setItem('animezona_fav_objects', JSON.stringify(arr));
+                return arr;
+              });
+            }
+            setFavorites(cleanFavs);
+            localStorage.setItem('animezona_favs', JSON.stringify(cleanFavs));
             localStorage.setItem('favoriteAnimes', JSON.stringify(cloudData.favoriteAnimes));
           }
           if (cloudData.continueWatching && Array.isArray(cloudData.continueWatching)) {
@@ -1362,11 +1432,15 @@ export default function App() {
             localStorage.setItem('watchedAnimes', JSON.stringify(cloudData.watchedAnimes));
           }
           if (cloudData.secretLikes && Array.isArray(cloudData.secretLikes)) {
-            setSecretFavorites(cloudData.secretLikes);
+            const cleanSecrets = cleanIdList(cloudData.secretLikes);
+            setSecretFavorites(cleanSecrets);
+            localStorage.setItem('animezona_secret_favs', JSON.stringify(cleanSecrets));
             localStorage.setItem('secretLikes', JSON.stringify(cloudData.secretLikes));
           }
           if (cloudData.hiddenAnimes && Array.isArray(cloudData.hiddenAnimes)) {
-            setHiddenRecommendations(cloudData.hiddenAnimes);
+            const cleanHidden = cleanIdList(cloudData.hiddenAnimes);
+            setHiddenRecommendations(cleanHidden);
+            localStorage.setItem('animezona_hidden_recommendations', JSON.stringify(cleanHidden));
             localStorage.setItem('hiddenAnimes', JSON.stringify(cloudData.hiddenAnimes));
           }
 

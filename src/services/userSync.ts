@@ -63,7 +63,7 @@ export const syncService = {
   saveUserKey: async (userId: string, key: string, value: any) => {
     if (!userId) return;
     try {
-      const serialized = typeof value === 'string' ? value : JSON.stringify(value);
+      const serialized = value; // Supabase JSONB maneja objetos nativamente
       const now = new Date().toISOString();
       const { error } = await supabase
         .from('user_sync')

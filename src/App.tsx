@@ -307,7 +307,7 @@ export default function App() {
     const seasonNum = Number(item.seasonNum || item.season || item.season_number || 1) || 1;
     const episodeNum = Number(item.episodeNum || item.episode || item.episode_number || item.epNum || 1) || 1;
     const episodeName = item.episodeName || item.episode_name || item.epTitle || `Episodio ${episodeNum}`;
-    const rawTime = Number(item.time ?? item.current_time ?? item.currentTime ?? item.progress ?? 0);
+    const rawTime = Number(item.time ?? item.current_time ?? item.currentTime ?? item.progress ?? item.timestamp ?? 0);
     const time = isNaN(rawTime) || rawTime < 0 ? 0 : rawTime;
     const rawDuration = Number(item.duration ?? item.totalDuration ?? item.total_time ?? 1440);
     const duration = isNaN(rawDuration) || rawDuration <= 0 ? 1440 : rawDuration;

@@ -43,14 +43,27 @@ import {
   Undo2,
   Sparkles,
   Wifi,
-  WifiOff
+  WifiOff,
+  Minimize2
 } from 'lucide-react';
 import { api, MappedAnime, MappedServer, MappedEpisode, TMDB_GENRES, cacheAnime, getCachedAnime } from './services/api';
 import { supabase } from './services/supabase';
 import { syncService } from './services/userSync';
 import { ORIGINAL_AVATARS, DEFAULT_AVATAR } from './config/avatars';
 import { App as CapApp } from '@capacitor/app';
-import { setAppOrientationPortrait, setAppOrientationLandscape } from './services/orientation';
+import {
+  setAppOrientationPortrait,
+  setAppOrientationLandscape,
+  enterAppFullscreen,
+  exitAppFullscreen
+} from './services/orientation';
+import {
+  HeroCarouselSkeleton,
+  AnimeCardSkeleton,
+  AnimeGridSkeleton,
+  AnimeRowSkeleton,
+  EpisodeListSkeleton
+} from './components/Skeleton';
 
 // Helper to strictly sanitize IDs and prevent [object Object] or invalid values
 const cleanIdList = (list: any[]): string[] => {
@@ -75,6 +88,13 @@ export default function App() {
   const [profileSubTab, setProfileSubTab] = useState<'historial' | 'continuar' | 'favoritos' | 'listas' | 'ocultos' | 'cuenta'>('historial');
   // Secret Zone sub-tabs: 'historial' | 'favoritos' | 'catalogo'
   const [secretSubTab, setSecretSubTab] = useState<'historial' | 'favoritos' | 'catalogo'>('historial');
+
+  // Fullscreen player state (Modo inmersivo horizontal solo en pantalla completa)
+  const [isFullscreenPlayer, setIsFullscreenPlayer] = useState(false);
+  const isFullscreenPlayerRef = useRef(false);
+  useEffect(() => {
+    isFullscreenPlayerRef.current = isFullscreenPlayer;
+  }, [isFullscreenPlayer]);
 
   // Anime Data with instant cache loading for 0ms initial render
   const [trendingAnimes, setTrendingAnimes] = useState<MappedAnime[]>(() => {
@@ -386,6 +406,37 @@ export default function App() {
     }
   };
 
+  // Fullscreen Handlers (Inmersivo Real con sensor horizontal en ambos lados y sin barra de notificaciones/hora/batería)
+  const enterPlayerFullscreen = async () => {
+    setIsFullscreenPlayer(true);
+    await enterAppFullscreen();
+    if (playerContainerRef.current) {
+      try {
+        if (!document.fullscreenElement && playerContainerRef.current.requestFullscreen) {
+          await playerContainerRef.current.requestFullscreen();
+        }
+      } catch (e) {}
+    }
+  };
+
+  const exitPlayerFullscreen = async () => {
+    setIsFullscreenPlayer(false);
+    await exitAppFullscreen();
+    try {
+      if (document.fullscreenElement && document.exitFullscreen) {
+        await document.exitFullscreen();
+      }
+    } catch (e) {}
+  };
+
+  const handleContainerFullscreen = () => {
+    if (isFullscreenPlayer) {
+      exitPlayerFullscreen();
+    } else {
+      enterPlayerFullscreen();
+    }
+  };
+
   const showToast = (msg: string) => {
     setToastMessage(msg);
     setTimeout(() => setToastMessage(null), 3500);
@@ -670,6 +721,11 @@ export default function App() {
         setSecretRemoveAnimeTarget(null);
         return true;
       }
+      // 2.5. Si está en pantalla completa de video (MP4 o Embed) -> salir de pantalla completa y volver a vertical
+      if (isFullscreenPlayerRef.current) {
+        exitPlayerFullscreen();
+        return true;
+      }
       // 3. Viendo episodio en reproductor -> volver a la ficha del anime
       if (currentEpisodeRef.current) {
         setCurrentEpisode(null);
@@ -732,15 +788,35 @@ export default function App() {
   }, []);
 
   // 2. Control dinámico de orientación:
-  // - Toda la app (Inicio, Catálogo, Perfil, etc.) estrictamente en vertical
-  // - Reproductores de video estrictamente en horizontal (admitiendo izquierda y derecha)
+  // - En navegación normal y dentro del anime: VERTICAL
+  // - Si el usuario sale del reproductor estando en pantalla completa: regresar a vertical y restaurar barras
   useEffect(() => {
-    if (currentEpisode) {
-      setAppOrientationLandscape();
-    } else {
-      setAppOrientationPortrait();
+    if (!currentEpisode && isFullscreenPlayerRef.current) {
+      exitPlayerFullscreen();
     }
   }, [currentEpisode]);
+
+  // 3. Listener nativo para cambios de pantalla completa del navegador / iframe embed
+  useEffect(() => {
+    const onFullscreenChange = () => {
+      const isFull = !!(document.fullscreenElement || (document as any).webkitFullscreenElement);
+      if (isFull) {
+        setIsFullscreenPlayer(true);
+        enterAppFullscreen();
+      } else {
+        setIsFullscreenPlayer(false);
+        exitAppFullscreen();
+      }
+    };
+
+    document.addEventListener('fullscreenchange', onFullscreenChange);
+    document.addEventListener('webkitfullscreenchange', onFullscreenChange);
+
+    return () => {
+      document.removeEventListener('fullscreenchange', onFullscreenChange);
+      document.removeEventListener('webkitfullscreenchange', onFullscreenChange);
+    };
+  }, []);
 
   // AUTO-SCROLL TO ACTIVE EPISODE IN THE LIST
   useEffect(() => {
@@ -1281,21 +1357,8 @@ export default function App() {
       playEpisode(selectedAnime, nextEp, true);
       showToast(`Reproduciendo T${nextEp.season_number || 1}E${nextEp.episode_number}`);
       setTimeout(() => {
-        if (playerContainerRef.current && !document.fullscreenElement) {
-          playerContainerRef.current.requestFullscreen().catch(() => {});
-        }
+        enterPlayerFullscreen();
       }, 400);
-    }
-  };
-
-  // Fullscreen Container Request
-  const handleContainerFullscreen = () => {
-    if (playerContainerRef.current) {
-      if (!document.fullscreenElement) {
-        playerContainerRef.current.requestFullscreen().catch(() => {});
-      } else {
-        document.exitFullscreen().catch(() => {});
-      }
     }
   };
 
@@ -1773,12 +1836,27 @@ export default function App() {
               {/* Video Player Container (Con foco e iluminación cuando se apagan las luces) */}
               <div
                 ref={playerContainerRef}
-                className={`relative aspect-video w-full bg-black rounded-xl overflow-hidden shadow-2xl border border-slate-800 transition-all duration-300 ${
-                  cinemaLightOff
-                    ? 'z-50 ring-4 ring-[#7c3aed]/80 shadow-[0_0_90px_rgba(124,58,237,0.7)] scale-[1.01]'
-                    : ''
+                className={`${
+                  isFullscreenPlayer
+                    ? 'fixed inset-0 z-50 bg-black w-screen h-screen flex flex-col justify-center items-center'
+                    : `relative aspect-video w-full bg-black rounded-xl overflow-hidden shadow-2xl border border-slate-800 transition-all duration-300 ${
+                        cinemaLightOff
+                          ? 'z-50 ring-4 ring-[#7c3aed]/80 shadow-[0_0_90px_rgba(124,58,237,0.7)] scale-[1.01]'
+                          : ''
+                      }`
                 }`}
               >
+                {/* Botón flotante para salir de pantalla completa */}
+                {isFullscreenPlayer && (
+                  <button
+                    onClick={exitPlayerFullscreen}
+                    className="absolute top-4 right-4 z-50 bg-black/60 hover:bg-black/80 text-white border border-white/20 backdrop-blur-md px-3 py-1.5 rounded-full text-xs font-semibold shadow-2xl flex items-center gap-1.5 active:scale-95 transition"
+                  >
+                    <Minimize2 className="w-3.5 h-3.5" />
+                    <span>Salir de Pantalla Completa</span>
+                  </button>
+                )}
+
                 {loadingServers ? (
                   <div className="flex flex-col items-center justify-center h-full text-slate-400 text-xs gap-2">
                     <RefreshCw className="w-7 h-7 animate-spin text-[#7c3aed]" />
@@ -1801,6 +1879,8 @@ export default function App() {
                       <iframe
                         src={activeServer.url}
                         allowFullScreen
+                        allow="autoplay; fullscreen; encrypted-media; picture-in-picture"
+                        sandbox="allow-scripts allow-same-origin allow-forms allow-presentation allow-encrypted-media"
                         className="w-full h-full border-0"
                         title={activeServer.name}
                       />
@@ -2148,19 +2228,23 @@ export default function App() {
                   </div>
                 )}
 
-                <div className="grid grid-cols-2 sm:grid-cols-3 gap-2.5 pt-2">
-                  {currentSeasonEpisodes.map((ep) => (
-                    <button
-                      key={ep.episode_number}
-                      onClick={() => playEpisode(selectedAnime, ep)}
-                      className="bg-[#121620] hover:bg-[#1a202c] hover:border-[#7c3aed] border border-[#1e2433] rounded-xl p-3 text-center transition flex flex-col items-center justify-center min-h-[58px] group active:scale-95"
-                    >
-                      <span className="text-xs font-bold text-slate-200 group-hover:text-white line-clamp-2">
-                        T{ep.season_number || 1}E{ep.episode_number} - {ep.title}
-                      </span>
-                    </button>
-                  ))}
-                </div>
+                {loadingServers || episodesList.length === 0 ? (
+                  <EpisodeListSkeleton count={6} />
+                ) : (
+                  <div className="grid grid-cols-2 sm:grid-cols-3 gap-2.5 pt-2">
+                    {currentSeasonEpisodes.map((ep) => (
+                      <button
+                        key={ep.episode_number}
+                        onClick={() => playEpisode(selectedAnime, ep)}
+                        className="bg-[#121620] hover:bg-[#1a202c] hover:border-[#7c3aed] border border-[#1e2433] rounded-xl p-3 text-center transition flex flex-col items-center justify-center min-h-[58px] group active:scale-95"
+                      >
+                        <span className="text-xs font-bold text-slate-200 group-hover:text-white line-clamp-2">
+                          T{ep.season_number || 1}E{ep.episode_number} - {ep.title}
+                        </span>
+                      </button>
+                    ))}
+                  </div>
+                )}
               </div>
             </div>
           ) : activeTab === 'home' ? (
@@ -2169,7 +2253,11 @@ export default function App() {
             /* ============================================================== */
             <div className="space-y-6">
               {/* CARRUSEL DE RECOMENDADOS DESLIZABLE */}
-              {carouselAnimes.length > 0 && (
+              {loading && carouselAnimes.length === 0 ? (
+                <div className="px-4">
+                  <HeroCarouselSkeleton />
+                </div>
+              ) : carouselAnimes.length > 0 ? (
                 <div className="relative w-full h-72 overflow-hidden group">
                   {/* Diapositiva Actual */}
                   {carouselAnimes.map((item, idx) => {
@@ -2258,7 +2346,7 @@ export default function App() {
                     ))}
                   </div>
                 </div>
-              )}
+              ) : null}
 
               {/* Continuar Viendo Row CON BOTÓN ENCIMA PARA QUITAR */}
               {continueWatching.length > 0 && (
@@ -2343,80 +2431,84 @@ export default function App() {
                   </button>
                 </div>
 
-                <div className="grid grid-cols-2 gap-3">
-                  {filteredTrending.slice(0, 10).map((anime) => (
-                    <div
-                      key={anime.id}
-                      onClick={() => openAnimeDetails(anime)}
-                      className="bg-[#121620] border border-[#1e2433] rounded-xl overflow-hidden cursor-pointer active:scale-98 transition flex flex-col group relative"
-                    >
-                      <div className="relative aspect-[2/3] overflow-hidden bg-black">
-                        <img
-                          src={anime.image}
-                          alt={anime.title}
-                          className="w-full h-full object-cover group-hover:scale-105 transition duration-300"
-                        />
-
-                        {/* Botón Ocultar recomendación */}
-                        <button
-                          onClick={(e) => {
-                            e.preventDefault();
-                            e.stopPropagation();
-                            hideRecommendation(anime, e);
-                          }}
-                          title="Ocultar recomendación"
-                          className="absolute top-2 left-2 p-1.5 rounded-full bg-black/70 hover:bg-black text-slate-300 hover:text-white transition z-20"
-                        >
-                          <EyeOff className="w-3.5 h-3.5" />
-                        </button>
-
-                        {/* Botón Me Gusta */}
-                        <button
-                          onClick={(e) => {
-                            e.preventDefault();
-                            e.stopPropagation();
-                            toggleFavorite(anime, e);
-                          }}
-                          onMouseDown={(e) => {
-                            e.preventDefault();
-                            e.stopPropagation();
-                            handleLikeTouchStart(anime);
-                          }}
-                          onMouseUp={(e) => {
-                            e.preventDefault();
-                            e.stopPropagation();
-                            handleLikeTouchEnd(anime, e);
-                          }}
-                          onTouchStart={(e) => {
-                            e.stopPropagation();
-                            handleLikeTouchStart(anime);
-                          }}
-                          onTouchEnd={(e) => {
-                            e.preventDefault();
-                            e.stopPropagation();
-                            handleLikeTouchEnd(anime, e);
-                          }}
-                          title="Me gusta"
-                          className="absolute top-2 right-2 p-1.5 rounded-full bg-black/70 hover:bg-black text-white transition active:scale-90 z-20"
-                        >
-                          <Heart
-                            className={`w-3.5 h-3.5 transition ${
-                              isAnimeFavorited(anime)
-                                ? 'fill-[#f87171] text-[#f87171]'
-                                : 'text-white'
-                            }`}
+                {loading && filteredTrending.length === 0 ? (
+                  <AnimeGridSkeleton count={4} />
+                ) : (
+                  <div className="grid grid-cols-2 gap-3">
+                    {filteredTrending.slice(0, 10).map((anime) => (
+                      <div
+                        key={anime.id}
+                        onClick={() => openAnimeDetails(anime)}
+                        className="bg-[#121620] border border-[#1e2433] rounded-xl overflow-hidden cursor-pointer active:scale-98 transition flex flex-col group relative"
+                      >
+                        <div className="relative aspect-[2/3] overflow-hidden bg-black">
+                          <img
+                            src={anime.image}
+                            alt={anime.title}
+                            className="w-full h-full object-cover group-hover:scale-105 transition duration-300"
                           />
-                        </button>
-                      </div>
 
-                      <div className="p-2 flex-1 flex flex-col justify-center">
-                        <h4 className="text-xs font-bold text-white line-clamp-1">
-                          {anime.title}
-                        </h4>
+                          {/* Botón Ocultar recomendación */}
+                          <button
+                            onClick={(e) => {
+                              e.preventDefault();
+                              e.stopPropagation();
+                              hideRecommendation(anime, e);
+                            }}
+                            title="Ocultar recomendación"
+                            className="absolute top-2 left-2 p-1.5 rounded-full bg-black/70 hover:bg-black text-slate-300 hover:text-white transition z-20"
+                          >
+                            <EyeOff className="w-3.5 h-3.5" />
+                          </button>
+
+                          {/* Botón Me Gusta */}
+                          <button
+                            onClick={(e) => {
+                              e.preventDefault();
+                              e.stopPropagation();
+                              toggleFavorite(anime, e);
+                            }}
+                            onMouseDown={(e) => {
+                              e.preventDefault();
+                              e.stopPropagation();
+                              handleLikeTouchStart(anime);
+                            }}
+                            onMouseUp={(e) => {
+                              e.preventDefault();
+                              e.stopPropagation();
+                              handleLikeTouchEnd(anime, e);
+                            }}
+                            onTouchStart={(e) => {
+                              e.stopPropagation();
+                              handleLikeTouchStart(anime);
+                            }}
+                            onTouchEnd={(e) => {
+                              e.preventDefault();
+                              e.stopPropagation();
+                              handleLikeTouchEnd(anime, e);
+                            }}
+                            title="Me gusta"
+                            className="absolute top-2 right-2 p-1.5 rounded-full bg-black/70 hover:bg-black text-white transition active:scale-90 z-20"
+                          >
+                            <Heart
+                              className={`w-3.5 h-3.5 transition ${
+                                isAnimeFavorited(anime)
+                                  ? 'fill-[#f87171] text-[#f87171]'
+                                  : 'text-white'
+                              }`}
+                            />
+                          </button>
+                        </div>
+
+                        <div className="p-2 flex-1 flex flex-col justify-center">
+                          <h4 className="text-xs font-bold text-white line-clamp-1">
+                            {anime.title}
+                          </h4>
+                        </div>
                       </div>
-                    </div>
-                  ))}
-                </div>
+                    ))}
+                  </div>
+                )}
               </div>
             </div>
           ) : activeTab === 'catalog' ? (
@@ -2461,7 +2553,10 @@ export default function App() {
               )}
 
               {/* Cuadrícula de Resultados Directos */}
-              <div className="grid grid-cols-2 gap-3 pt-1">
+              {loading && filteredCatalog.length === 0 ? (
+                <AnimeGridSkeleton count={8} />
+              ) : (
+                <div className="grid grid-cols-2 gap-3 pt-1">
                 {filteredCatalog.map((anime, index) => (
                   <div
                     key={anime.id}
@@ -2534,6 +2629,7 @@ export default function App() {
                   </div>
                 ))}
               </div>
+              )}
 
               {/* Animes Relacionados y Recomendados según lo que escribió */}
               {searchQuery.trim() && relatedAnimes.length > 0 && (
@@ -2637,7 +2733,9 @@ export default function App() {
                 </h3>
               </div>
 
-              {favorites.length === 0 ? (
+              {loading && favorites.length === 0 ? (
+                <AnimeGridSkeleton count={4} />
+              ) : favorites.length === 0 ? (
                 <div className="bg-[#121620] border border-[#1e2433] rounded-2xl p-6 text-center text-slate-400 text-xs">
                   No has agregado animes a tus favoritos todavía.
                 </div>

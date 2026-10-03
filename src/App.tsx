@@ -8,7 +8,6 @@ import {
   VolumeX,
   Search,
   Bookmark,
-  Smartphone,
   Flame,
   CheckCircle2,
   AlertCircle,
@@ -51,6 +50,7 @@ import { supabase } from './services/supabase';
 import { syncService } from './services/userSync';
 import { ORIGINAL_AVATARS, DEFAULT_AVATAR } from './config/avatars';
 import { App as CapApp } from '@capacitor/app';
+import { setAppOrientationPortrait, setAppOrientationLandscape } from './services/orientation';
 
 // Helper to strictly sanitize IDs and prevent [object Object] or invalid values
 const cleanIdList = (list: any[]): string[] => {
@@ -75,7 +75,6 @@ export default function App() {
   const [profileSubTab, setProfileSubTab] = useState<'historial' | 'continuar' | 'favoritos' | 'listas' | 'ocultos' | 'cuenta'>('historial');
   // Secret Zone sub-tabs: 'historial' | 'favoritos' | 'catalogo'
   const [secretSubTab, setSecretSubTab] = useState<'historial' | 'favoritos' | 'catalogo'>('historial');
-  const [viewMode, setViewMode] = useState<'mobile' | 'fullscreen'>('mobile');
 
   // Anime Data with instant cache loading for 0ms initial render
   const [trendingAnimes, setTrendingAnimes] = useState<MappedAnime[]>(() => {
@@ -727,6 +726,21 @@ export default function App() {
     };
   }, []);
 
+  // 1. Al montar la aplicación: asegurar que siempre inicie bloqueada en vertical
+  useEffect(() => {
+    setAppOrientationPortrait();
+  }, []);
+
+  // 2. Control dinámico de orientación:
+  // - Toda la app (Inicio, Catálogo, Perfil, etc.) estrictamente en vertical
+  // - Reproductores de video estrictamente en horizontal (admitiendo izquierda y derecha)
+  useEffect(() => {
+    if (currentEpisode) {
+      setAppOrientationLandscape();
+    } else {
+      setAppOrientationPortrait();
+    }
+  }, [currentEpisode]);
 
   // AUTO-SCROLL TO ACTIVE EPISODE IN THE LIST
   useEffect(() => {
@@ -1523,11 +1537,7 @@ export default function App() {
     (videoDuration > 0 && videoDuration - currentVideoTime <= 45 && currentVideoTime > 60);
 
   return (
-    <div
-      className={`min-h-screen min-h-[100dvh] bg-[#080b11] text-slate-100 font-sans flex flex-col items-center select-none ${
-        viewMode === 'mobile' ? 'sm:py-4 sm:px-2 p-0' : 'p-0'
-      }`}
-    >
+    <div className="min-h-screen min-h-[100dvh] bg-[#080b11] text-slate-100 font-sans flex flex-col items-center select-none p-0 overflow-x-hidden">
       {/* Toast Alert */}
       {toastMessage && (
         <div className="fixed top-5 z-50 bg-[#7c3aed] text-white font-bold text-xs px-4 py-2.5 rounded-full shadow-2xl flex items-center gap-2 animate-bounce">
@@ -1536,57 +1546,19 @@ export default function App() {
         </div>
       )}
 
-      {/* Top Device Switcher Bar (Visible on desktop/tablets, hidden on real phones) */}
-      <div className="hidden sm:flex w-full max-w-md mx-auto px-4 py-1.5 items-center justify-between text-xs text-slate-400 border-b border-[#1a202c]/60 mb-2">
-        <div className="flex items-center gap-2">
-          <span className="w-2 h-2 rounded-full bg-[#7c3aed] animate-pulse"></span>
-          <span className="text-[11px] font-semibold text-slate-300">
-            AnimeZona Móvil
-          </span>
-        </div>
-        <button
-          onClick={() => setViewMode(viewMode === 'mobile' ? 'fullscreen' : 'mobile')}
-          className="bg-[#121620] hover:bg-[#1a202c] text-slate-300 px-2.5 py-1 rounded text-[11px] flex items-center gap-1.5 border border-[#1e2433] transition"
-        >
-          <Smartphone className="w-3 h-3 text-[#a855f7]" />
-          <span>{viewMode === 'mobile' ? 'Pantalla Completa' : 'Modo Teléfono'}</span>
-        </button>
-      </div>
-
-      {/* Main Container / Mobile Frame: Adapts edge-to-edge on mobile phones (Poco M6 Pro 5G) and framed on desktop */}
+      {/* Main Container: Full width on phone, responsive in landscape, cleanly centered on desktop without fake phone borders */}
       <div
-        className={`w-full bg-[#0b0e14] flex flex-col transition-all duration-300 relative ${
-          viewMode === 'mobile'
-            ? 'max-w-full sm:max-w-[420px] h-[100dvh] max-h-[100dvh] sm:h-[850px] sm:max-h-[850px] rounded-none sm:rounded-[44px] border-none sm:border-[7px] sm:border-[#181e2b] sm:shadow-[0_20px_60px_-15px_rgba(0,0,0,0.95)] overflow-hidden'
-            : 'max-w-md h-[100dvh] max-h-[100dvh] overflow-hidden'
-        }`}
+        className={`w-full ${
+          currentEpisode ? 'max-w-none' : 'max-w-md'
+        } h-[100dvh] max-h-[100dvh] bg-[#0b0e14] flex flex-col transition-all duration-300 relative overflow-hidden`}
       >
-        {/* Notch / Status Bar Safe-Area Margin (Tope superior fijo para no tapar reloj y notificaciones) */}
-        <div
-          className="w-full shrink-0 bg-[#0b0e14]"
-          style={{ height: 'max(env(safe-area-inset-top, 0px), 32px)' }}
-        />
-
-        {/* Android Native Status Bar (Visible solo en preview desktop) */}
-        <div className="hidden sm:flex px-6 pt-1 pb-1 items-center justify-between text-[11px] text-slate-400 font-semibold bg-[#0b0e14]">
-          <span>12:45</span>
-          <div className="flex items-center gap-2 text-slate-300">
-            {isOnline ? (
-              <span className="text-[10px] text-slate-300 font-semibold flex items-center gap-1">
-                <Wifi className="w-3 h-3 text-emerald-400" />
-                5G
-              </span>
-            ) : (
-              <span className="text-[10px] text-amber-400 font-bold flex items-center gap-1">
-                <WifiOff className="w-3 h-3 text-amber-400" />
-                Offline
-              </span>
-            )}
-            <div className="w-5 h-2.5 border border-slate-400 rounded-sm p-0.5 flex items-center">
-              <div className={`w-full h-full rounded-xs ${isOnline ? 'bg-[#7c3aed]' : 'bg-amber-500'}`}></div>
-            </div>
-          </div>
-        </div>
+        {/* Notch / Status Bar Safe-Area Margin (Tope superior fijo para no tapar reloj y notificaciones del sistema) */}
+        {!currentEpisode && (
+          <div
+            className="w-full shrink-0 bg-[#0b0e14]"
+            style={{ height: 'max(env(safe-area-inset-top, 0px), 32px)' }}
+          />
+        )}
 
         {/* Sutil Aviso de Conexión Offline */}
         {!isOnline && (
@@ -1613,8 +1585,9 @@ export default function App() {
           </div>
         )}
 
-        {/* Header Estático AnimeZona (Nunca desaparece al deslizar hacia arriba) */}
-        <header className="px-4 pt-1.5 pb-2.5 shrink-0 border-b border-[#161c28] bg-[#0b0e14]/95 backdrop-blur-md z-40 space-y-2">
+        {/* Header Estático AnimeZona (Fijo arriba: Logo, Avatar y Búsqueda, nunca desaparece al deslizar) */}
+        {!currentEpisode && (
+          <header className="px-4 pt-1.5 pb-2.5 shrink-0 border-b border-[#161c28] bg-[#0b0e14]/95 backdrop-blur-md z-40 space-y-2">
           {/* Fila 1: Logo ANIMEZONA y Avatar de perfil */}
           <div className="flex items-center justify-between">
             <div
@@ -1680,6 +1653,7 @@ export default function App() {
             )}
           </div>
         </header>
+        )}
 
         {/* TELÓN DE DESENFOQUE PARA APAGAR LUZ (Todo oscuro y borroso excepto el reproductor) */}
         {cinemaLightOff && (
@@ -3729,7 +3703,8 @@ export default function App() {
         )}
 
         {/* Clean Mobile Bottom Navigation Bar: Ergonomic for Poco M6 Pro & Mobile Gesture Bars */}
-        <nav className="border-t border-[#181f2c] bg-[#0b0e14]/95 backdrop-blur-md px-3 pt-2.5 pb-[max(0.6rem,env(safe-area-inset-bottom))] flex items-center justify-around fixed sm:absolute bottom-0 left-0 right-0 z-40 shadow-2xl">
+        {!currentEpisode && (
+          <nav className="border-t border-[#181f2c] bg-[#0b0e14]/95 backdrop-blur-md px-3 pt-2.5 pb-[max(0.6rem,env(safe-area-inset-bottom))] flex items-center justify-around fixed sm:absolute bottom-0 left-0 right-0 z-40 shadow-2xl">
           <button
             onClick={() => {
               if (activeTab === 'home' && !selectedAnime) {
@@ -3816,6 +3791,7 @@ export default function App() {
             <span className="text-[10px]">Perfil</span>
           </button>
         </nav>
+        )}
       </div>
     </div>
   );

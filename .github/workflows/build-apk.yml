@@ -14,13 +14,10 @@ jobs:
       - name: Checkout Source Code
         uses: actions/checkout@v4
 
-      - name: Grant Execute Permission to Gradlew
-        run: chmod +x android/gradlew
-
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 22
 
       - name: Setup Java JDK
         uses: actions/setup-java@v4
@@ -31,6 +28,11 @@ jobs:
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v4
 
+      - name: Grant Execute Permissions
+        run: |
+          chmod +x android/gradlew
+          chmod -R 755 android
+
       - name: Install Node Dependencies
         run: npm install --legacy-peer-deps
 
@@ -38,7 +40,16 @@ jobs:
         run: npm run build
 
       - name: Copy Assets to Capacitor Android
-        run: npx cap copy android
+        env:
+          CAPACITOR_TELEMETRY: "false"
+          CI: "true"
+        run: |
+          npx cap copy android || {
+            echo "Manual fallback copy"
+            mkdir -p android/app/src/main/assets/public
+            cp -r dist/* android/app/src/main/assets/public/
+            cp capacitor.config.json android/app/src/main/assets/capacitor.config.json
+          }
 
       - name: Build APK with Gradle
         run: |

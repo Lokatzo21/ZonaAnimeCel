@@ -26,6 +26,7 @@ export interface MappedAnime {
   status: string;
   isCustom: boolean;
   banner?: string;
+  contentType?: 'todos' | 'animes' | 'peliculas' | 'series';
 }
 
 export interface MappedServer {
@@ -106,6 +107,7 @@ const fetchWithDelay = async (url: string) => {
 };
 
 const mapAnimeData = (item: any): MappedAnime => {
+  const isMovie = Boolean(item.title && !item.name);
   const mapped: MappedAnime = {
     id: item.id,
     title: item.name || item.original_name || item.title || item.original_title || 'Sin Título',
@@ -118,14 +120,15 @@ const mapAnimeData = (item: any): MappedAnime => {
       ? `https://image.tmdb.org/t/p/w1280${item.poster_path}`
       : 'https://images.unsplash.com/photo-1534447677768-be436bb09401?w=1200&q=80',
     score: item.vote_average ? Number(item.vote_average).toFixed(1) : '9.0',
-    totalEpisodes: item.number_of_episodes || 12,
-    episodes: item.number_of_episodes || 12,
-    type: item.type || (item.number_of_episodes ? 'TV' : 'Anime'),
+    totalEpisodes: item.number_of_episodes || (isMovie ? 1 : 12),
+    episodes: item.number_of_episodes || (isMovie ? 1 : 12),
+    type: isMovie ? 'Película' : (item.number_of_episodes ? 'TV' : 'Anime'),
+    contentType: isMovie ? 'peliculas' : (item.original_language === 'ja' ? 'animes' : 'series'),
     description: item.overview || 'Sinopsis no disponible en este momento.',
     genres: item.genres
       ? item.genres.map((g: any) => (typeof g === 'object' && g.name ? g.name : String(g)))
       : ['Anime', 'Acción'],
-    status: item.status === 'Ended' ? 'Finalizado' : 'En emisión',
+    status: item.status === 'Ended' ? 'Finalizado' : (isMovie ? 'Finalizado' : 'En emisión'),
     isCustom: false
   };
   cacheAnime(mapped);
@@ -133,6 +136,12 @@ const mapAnimeData = (item: any): MappedAnime => {
 };
 
 const mapCustomAnime = (item: any): MappedAnime => {
+  const isMovieOrSaga = (Number(item.total_episodes) === 1) || 
+    /colecci[oó]n|pel[ií]cula|saga|harry potter|piratas del caribe|arma mortal|animales fant[aá]sticos|deadpool/i.test(item.title);
+  const isAnime = /berserk|mysteries|cube|anime/i.test(item.title) || 
+    (Array.isArray(item.genres) && item.genres.includes('Animación') && !isMovieOrSaga);
+  const isSeries = !isMovieOrSaga && !isAnime;
+
   const mapped: MappedAnime = {
     id: item.id,
     title: item.title,
@@ -141,7 +150,8 @@ const mapCustomAnime = (item: any): MappedAnime => {
     score: item.score || '9.5',
     totalEpisodes: item.total_episodes || 12,
     episodes: item.total_episodes || 12,
-    type: 'TV',
+    type: isMovieOrSaga ? 'Película / Saga' : (isSeries ? 'Serie' : 'Anime'),
+    contentType: isMovieOrSaga ? 'peliculas' : (isAnime ? 'animes' : 'series'),
     description: item.description || 'Sinopsis agregada por la comunidad AnimeZona.',
     genres: item.genres || ['Anime'],
     status: item.status || 'En emisión',
@@ -229,8 +239,13 @@ export const api = {
     }
   },
 
-  // Discover / Catalog with Genres & Infinite Scroll (using real search endpoint when query is present)
-  getDiscoverAnime: async (genreName: string = 'Todos', query: string = '', page: number = 1): Promise<MappedAnime[]> => {
+  // Discover / Catalog with Genres, Type Filters & Infinite Scroll
+  getDiscoverAnime: async (
+    genreName: string = 'Todos',
+    query: string = '',
+    page: number = 1,
+    typeFilter: string = 'todos'
+  ): Promise<MappedAnime[]> => {
     try {
       let customAnimes: MappedAnime[] = [];
       const cleanQuery = query.trim().toLowerCase();
@@ -238,8 +253,11 @@ export const api = {
       if (page === 1) {
         const custom = await api.getCustomAnimes();
         customAnimes = custom;
+        if (typeFilter && typeFilter !== 'todos') {
+          customAnimes = customAnimes.filter((c) => c.contentType === typeFilter);
+        }
         if (genreName !== 'Todos') {
-          customAnimes = custom.filter((c) => c.genres.includes(genreName));
+          customAnimes = customAnimes.filter((c) => c.genres && c.genres.includes(genreName));
         }
         if (cleanQuery) {
           customAnimes = customAnimes.filter((c) => c.title.toLowerCase().includes(cleanQuery));
@@ -248,16 +266,43 @@ export const api = {
 
       let tmdbList: MappedAnime[] = [];
       if (cleanQuery) {
-        // USE REAL TMDB SEARCH API FOR INSTANT ACCURATE MATCHES (e.g. Frieren, One Piece, etc.)
-        const searchUrl = `${BASE_URL}/search/tv?api_key=${TMDB_API_KEY}&language=es-MX&query=${encodeURIComponent(query.trim())}&page=${page}`;
-        const searchRes = await fetchWithDelay(searchUrl);
-        tmdbList = (searchRes?.results || []).map(mapAnimeData);
-      } else {
-        // Normal genre/popularity browsing
-        let url = `${BASE_URL}/discover/tv?api_key=${TMDB_API_KEY}&language=es-MX&with_original_language=ja&sort_by=popularity.desc&page=${page}`;
-        if (genreName !== 'Todos' && TMDB_GENRES[genreName]) {
-          url += `&with_genres=${TMDB_GENRES[genreName]}`;
+        if (typeFilter === 'peliculas') {
+          const searchUrl = `${BASE_URL}/search/movie?api_key=${TMDB_API_KEY}&language=es-MX&query=${encodeURIComponent(query.trim())}&page=${page}&include_adult=false`;
+          const searchRes = await fetchWithDelay(searchUrl);
+          tmdbList = (searchRes?.results || []).map(mapAnimeData);
+        } else {
+          const searchUrl = `${BASE_URL}/search/tv?api_key=${TMDB_API_KEY}&language=es-MX&query=${encodeURIComponent(query.trim())}&page=${page}&include_adult=false`;
+          const searchRes = await fetchWithDelay(searchUrl);
+          tmdbList = (searchRes?.results || []).map(mapAnimeData);
         }
+      } else {
+        let url = '';
+        if (typeFilter === 'peliculas') {
+          const movieGenreMap: Record<string, number> = {
+            'Animación': 16,
+            'Action & Adventure': 28,
+            'Sci-Fi & Fantasy': 878,
+            'Comedia': 35,
+            'Drama': 18,
+            'Misterio': 9648
+          };
+          url = `${BASE_URL}/discover/movie?api_key=${TMDB_API_KEY}&language=es-MX&sort_by=popularity.desc&page=${page}&include_adult=false`;
+          if (genreName !== 'Todos' && movieGenreMap[genreName]) {
+            url += `&with_genres=${movieGenreMap[genreName]}`;
+          }
+        } else if (typeFilter === 'series') {
+          url = `${BASE_URL}/discover/tv?api_key=${TMDB_API_KEY}&language=es-MX&without_original_language=ja&sort_by=popularity.desc&page=${page}&include_adult=false`;
+          if (genreName !== 'Todos' && TMDB_GENRES[genreName]) {
+            url += `&with_genres=${TMDB_GENRES[genreName]}`;
+          }
+        } else {
+          // 'todos' o 'animes' (Anime japonés)
+          url = `${BASE_URL}/discover/tv?api_key=${TMDB_API_KEY}&language=es-MX&with_original_language=ja&sort_by=popularity.desc&page=${page}&include_adult=false`;
+          if (genreName !== 'Todos' && TMDB_GENRES[genreName]) {
+            url += `&with_genres=${TMDB_GENRES[genreName]}`;
+          }
+        }
+
         const res = await fetchWithDelay(url);
         tmdbList = (res?.results || []).map(mapAnimeData);
       }
@@ -274,7 +319,7 @@ export const api = {
         });
       }
 
-      if (page === 1 && genreName === 'Todos' && !cleanQuery && combined.length > 0) {
+      if (page === 1 && genreName === 'Todos' && typeFilter === 'todos' && !cleanQuery && combined.length > 0) {
         localStorage.setItem('animezona_cached_catalog', JSON.stringify(combined));
       }
       return combined;

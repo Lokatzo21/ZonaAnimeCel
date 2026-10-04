@@ -46,9 +46,13 @@ export const syncService = {
 
       const map: Record<string, any> = {};
       for (const row of data) {
-        try {
-          map[row.key] = JSON.parse(row.value);
-        } catch {
+        if (typeof row.value === 'string') {
+          try {
+            map[row.key] = JSON.parse(row.value);
+          } catch {
+            map[row.key] = row.value;
+          }
+        } else {
           map[row.key] = row.value;
         }
       }

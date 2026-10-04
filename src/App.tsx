@@ -135,6 +135,14 @@ export default function App() {
   const [hasMoreCatalog, setHasMoreCatalog] = useState(true);
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedGenre, setSelectedGenre] = useState('Todos');
+  const [selectedType, setSelectedType] = useState('todos');
+
+  const TYPE_OPTIONS = [
+    { id: 'todos', label: '🔥 Todo' },
+    { id: 'animes', label: '🎌 Animes' },
+    { id: 'peliculas', label: '🎬 Películas y Sagas' },
+    { id: 'series', label: '📺 Series' }
+  ];
 
   // Related / Recommended animes during search
   const [relatedAnimes, setRelatedAnimes] = useState<MappedAnime[]>([]);
@@ -566,7 +574,7 @@ export default function App() {
       const cleanFavs = cloudData.favoriteAnimes
         .map((item: any) => (typeof item === 'object' && item !== null ? String(item.id || item.animeId || '') : String(item)))
         .filter((id: string) => id && id !== '[object Object]');
-      const objs = cloudData.favoriteAnimes.filter((item: any) => item && typeof item === 'object' && item.title);
+      const objs = cloudData.favoriteAnimes.filter((item: any) => item && typeof item === 'object' && item.title && !String(item.title).startsWith('Anime #'));
       if (objs.length > 0) {
         setFavoriteAnimesData((prev) => {
           const map = new Map<string, MappedAnime>();
@@ -580,7 +588,7 @@ export default function App() {
       }
       setFavorites(cleanFavs);
       localStorage.setItem('animezona_favs', JSON.stringify(cleanFavs));
-      localStorage.setItem('favoriteAnimes', JSON.stringify(cleanFavs));
+      localStorage.setItem('favoriteAnimes', JSON.stringify(cloudData.favoriteAnimes));
     }
 
     // 4. Listas personalizadas
@@ -736,7 +744,8 @@ export default function App() {
     loadInitialData();
     refreshSecretCatalog();
 
-    // Check existing Supabase session
+    // Check existing Supabase session & setup real-time sync
+    let syncChannel: any = null;
     supabase.auth.getSession().then(async ({ data: { session } }) => {
       if (session?.user) {
         setUserId(session.user.id);
@@ -751,6 +760,32 @@ export default function App() {
         // Load persisted cloud data from user_sync table
         const cloudData = await syncService.loadUserData(session.user.id);
         applyCloudData(cloudData);
+
+        // Subscribe to real-time changes from Web or other devices
+        syncChannel = supabase
+          .channel(`user_sync_${session.user.id}`)
+          .on(
+            'postgres_changes',
+            {
+              event: '*',
+              schema: 'public',
+              table: 'user_sync',
+              filter: `user_id=eq.${session.user.id}`
+            },
+            (payload) => {
+              const row = payload.new as any;
+              if (row && row.key) {
+                let val = row.value;
+                if (typeof val === 'string') {
+                  try {
+                    val = JSON.parse(val);
+                  } catch {}
+                }
+                applyCloudData({ [row.key]: val });
+              }
+            }
+          )
+          .subscribe();
       }
     });
 
@@ -770,6 +805,7 @@ export default function App() {
     return () => {
       window.removeEventListener('online', handleOnline);
       window.removeEventListener('offline', handleOffline);
+      if (syncChannel) supabase.removeChannel(syncChannel);
     };
   }, []);
 
@@ -821,6 +857,7 @@ export default function App() {
           });
           const arr = Array.from(map.values());
           localStorage.setItem('animezona_fav_objects', JSON.stringify(arr));
+          saveFavorites(cleanFavs, arr);
           return arr;
         });
       }
@@ -1062,7 +1099,7 @@ export default function App() {
     setLoadingMore(true);
     const nextPage = catalogPage + 1;
     try {
-      const newItems = await api.getDiscoverAnime(selectedGenre, searchQuery, nextPage);
+      const newItems = await api.getDiscoverAnime(selectedGenre, searchQuery, nextPage, selectedType);
       if (newItems.length === 0) {
         setHasMoreCatalog(false);
       } else {
@@ -1080,13 +1117,28 @@ export default function App() {
     }
   };
 
+  const handleTypeChange = async (typeId: string) => {
+    setSelectedType(typeId);
+    setCatalogPage(1);
+    setHasMoreCatalog(true);
+    setLoading(true);
+    try {
+      const res = await api.getDiscoverAnime(selectedGenre, searchQuery, 1, typeId);
+      setCatalogAnimes(res);
+    } catch (e) {
+      console.error(e);
+    } finally {
+      setLoading(false);
+    }
+  };
+
   const handleGenreChange = async (genre: string) => {
     setSelectedGenre(genre);
     setCatalogPage(1);
     setHasMoreCatalog(true);
     setLoading(true);
     try {
-      const res = await api.getDiscoverAnime(genre, searchQuery, 1);
+      const res = await api.getDiscoverAnime(genre, searchQuery, 1, selectedType);
       setCatalogAnimes(res);
     } catch (e) {
       console.error(e);
@@ -1108,7 +1160,7 @@ export default function App() {
     if (!clean) {
       setRelatedAnimes([]);
       try {
-        const res = await api.getDiscoverAnime(selectedGenre, '', 1);
+        const res = await api.getDiscoverAnime(selectedGenre, '', 1, selectedType);
         setCatalogAnimes(res);
       } catch (e) {
         console.error(e);
@@ -1117,7 +1169,7 @@ export default function App() {
     }
 
     try {
-      const res = await api.getDiscoverAnime(selectedGenre, clean, 1);
+      const res = await api.getDiscoverAnime(selectedGenre, clean, 1, selectedType);
       setCatalogAnimes(res);
 
       // Instantly fetch related & recommended animes if there is a primary match
@@ -1143,11 +1195,12 @@ export default function App() {
     setSearchQuery('');
     setRelatedAnimes([]);
     setSelectedGenre('Todos');
+    setSelectedType('todos');
     setCatalogPage(1);
     setHasMoreCatalog(true);
     setLoading(true);
     try {
-      const res = await api.getDiscoverAnime('Todos', '', 1);
+      const res = await api.getDiscoverAnime('Todos', '', 1, 'todos');
       setCatalogAnimes(res);
     } catch (e) {
       console.error(e);
@@ -1162,25 +1215,51 @@ export default function App() {
     setFavorites(cleanFavIds);
     localStorage.setItem('animezona_favs', JSON.stringify(cleanFavIds));
 
-    let sourceObjs = explicitObjects && explicitObjects.length > 0 ? explicitObjects : favoriteAnimesData;
-    if (!sourceObjs || sourceObjs.length === 0) {
-      try {
-        const stored = localStorage.getItem('animezona_fav_objects');
-        if (stored) sourceObjs = JSON.parse(stored);
-      } catch {}
-    }
-    sourceObjs = Array.isArray(sourceObjs) ? sourceObjs : [];
+    // Consolidate all available source objects
+    const knownPool: any[] = [
+      ...(explicitObjects || []),
+      ...(favoriteAnimesData || []),
+      ...(catalogAnimes || []),
+      ...(trendingAnimes || []),
+      ...(topAnimes || []),
+      ...(recentAnimes || [])
+    ];
+    try {
+      const stored = localStorage.getItem('animezona_fav_objects');
+      if (stored) {
+        const parsed = JSON.parse(stored);
+        if (Array.isArray(parsed)) knownPool.push(...parsed);
+      }
+    } catch {}
+
+    const objMap = new Map<string, any>();
+    knownPool.forEach((o: any) => {
+      if (o && o.id && o.title && !String(o.title).startsWith('Anime #')) {
+        objMap.set(String(o.id).trim(), o);
+      }
+    });
 
     const fullObjects = cleanFavIds.map((id) => {
-      const found = sourceObjs.find((o: any) => String(o?.id).trim() === id) || findAnimeInCache(id);
-      if (found && found.title && !found.title.startsWith('Anime #')) {
+      const found = objMap.get(id) || findAnimeInCache(id);
+      if (found && found.title && !String(found.title).startsWith('Anime #')) {
         return {
           id: String(found.id),
           title: found.title,
-          image: found.image || (found as any).coverImage || ''
+          image: found.image || (found as any).coverImage || '',
+          score: found.score || '9.0',
+          type: found.type || 'Anime',
+          banner: found.banner || found.backdrop || '',
+          description: found.description || ''
         };
       }
-      return { id: String(id) };
+      return {
+        id: String(id),
+        title: `Anime #${id}`,
+        image: 'https://images.unsplash.com/photo-1578632767115-351597cf2477?w=500&q=80',
+        score: '9.0',
+        type: 'Anime',
+        description: ''
+      };
     });
 
     localStorage.setItem('favoriteAnimes', JSON.stringify(fullObjects));
@@ -1411,6 +1490,10 @@ export default function App() {
     const idStr = String(animeId).trim();
     if (!idStr || idStr === '[object Object]') return;
 
+    if (animeObj && animeObj.title && !animeObj.title.startsWith('Anime #')) {
+      cacheAnime(animeObj);
+    }
+
     const isFav = isAnimeFavorited(animeObj || { id: idStr });
     const cleanCurrent = cleanIdList(favorites);
 
@@ -1439,6 +1522,7 @@ export default function App() {
         : findAnimeInCache(idStr);
 
       if (targetObj && targetObj.title && !targetObj.title.startsWith('Anime #')) {
+        cacheAnime(targetObj);
         updatedData = [
           ...favoriteAnimesData.filter((a) => String(a.id).trim() !== idStr),
           targetObj
@@ -1450,6 +1534,7 @@ export default function App() {
         saveFavorites(updatedFavorites);
         api.getAnimeInfo(idStr).then((info) => {
           if (info && info.title && !info.title.startsWith('Anime #')) {
+            cacheAnime(info);
             setFavoriteAnimesData((prev) => {
               const u = [...prev.filter((a) => String(a.id).trim() !== idStr), info];
               localStorage.setItem('animezona_fav_objects', JSON.stringify(u));
@@ -2598,9 +2683,9 @@ export default function App() {
                             </button>
 
                             <button
-                              onClick={(e) => toggleFavorite(item.id, e)}
+                              onClick={(e) => toggleFavorite(item, e)}
                               className={`p-2 rounded-xl border transition ${
-                                favorites.includes(String(item.id))
+                                isAnimeFavorited(item)
                                   ? 'bg-[#3b1219] border-[#7f1d1d] text-[#f87171]'
                                   : 'bg-[#121620] border-slate-700 text-slate-300'
                               }`}
@@ -2794,7 +2879,25 @@ export default function App() {
             /* ============================================================== */
             /* SCREEN 4: CATÁLOGO                                             */
             /* ============================================================== */
-            <div className="px-4 py-3 space-y-4">
+            <div className="px-4 py-3 space-y-3">
+              {/* Selector de Tipo de Contenido (Todo | Animes | Películas y Sagas | Series) */}
+              <div className="flex gap-2 overflow-x-auto pb-1 no-scrollbar">
+                {TYPE_OPTIONS.map((t) => (
+                  <button
+                    key={t.id}
+                    onClick={() => handleTypeChange(t.id)}
+                    className={`px-3.5 py-1.5 rounded-xl text-xs font-bold whitespace-nowrap transition flex items-center gap-1.5 ${
+                      selectedType === t.id
+                        ? 'bg-gradient-to-r from-[#7c3aed] to-[#ec4899] text-white shadow-lg shadow-purple-950 ring-1 ring-white/20'
+                        : 'bg-[#121620] border border-[#1e2433] text-slate-300 hover:text-white'
+                    }`}
+                  >
+                    <span>{t.label}</span>
+                  </button>
+                ))}
+              </div>
+
+              {/* Selector de Género */}
               <div className="flex gap-1.5 overflow-x-auto pb-1 no-scrollbar">
                 {Object.keys(TMDB_GENRES).map((g) => (
                   <button
@@ -2989,16 +3092,31 @@ export default function App() {
                       findAnimeInCache(cleanId) ||
                       [...trendingAnimes, ...topAnimes, ...catalogAnimes, ...recentAnimes].find((a) => String(a.id) === cleanId);
 
+                    const title = anime?.title && !anime.title.startsWith('Anime #')
+                      ? anime.title
+                      : cleanId.startsWith('custom-') ? 'Anime Favorito' : `Anime #${cleanId}`;
+
                     return (
                       <div
                         key={`fav-card-${cleanId}-${idx}`}
                         className="bg-[#121620] border border-[#1e2433] rounded-xl overflow-hidden relative group active:scale-98 transition flex flex-col"
                       >
-                        <div onClick={() => anime && openAnimeDetails(anime)} className="cursor-pointer flex-1 flex flex-col">
+                        <div
+                          onClick={() => {
+                            if (anime) {
+                              openAnimeDetails(anime);
+                            } else {
+                              api.getAnimeInfo(cleanId).then((inf) => {
+                                if (inf) openAnimeDetails(inf);
+                              });
+                            }
+                          }}
+                          className="cursor-pointer flex-1 flex flex-col"
+                        >
                           <div className="aspect-[2/3] relative overflow-hidden bg-black">
                             <img
                               src={anime?.image || 'https://images.unsplash.com/photo-1578632767115-351597cf2477?w=500&q=80'}
-                              alt={anime?.title || 'Anime'}
+                              alt={title}
                               className="w-full h-full object-cover group-hover:scale-105 transition duration-300"
                               loading="lazy"
                             />
@@ -3009,7 +3127,7 @@ export default function App() {
                             )}
                           </div>
                           <div className="p-2">
-                            <h5 className="text-xs font-bold text-white line-clamp-1">{anime?.title || 'Cargando...'}</h5>
+                            <h5 className="text-xs font-bold text-white line-clamp-1">{title}</h5>
                             <span className="text-[10px] text-slate-400">{anime?.type || 'Anime'}</span>
                           </div>
                         </div>
@@ -3458,7 +3576,7 @@ export default function App() {
                                 (a) => String(a.id) === cleanId
                               ) || {
                                 id: cleanId,
-                                title: cleanId.startsWith('custom-') ? 'Anime Favorito' : cleanId,
+                                title: cleanId.startsWith('custom-') ? 'Anime Favorito' : `Anime #${cleanId}`,
                                 image: 'https://images.unsplash.com/photo-1578632767115-351597cf2477?w=500&q=80',
                                 type: 'Anime',
                                 score: '9.0',
@@ -3474,7 +3592,18 @@ export default function App() {
                                 key={`prof-fav-card-${anime.id}-${idx}`}
                                 className="bg-[#121620] border border-[#1e2433] rounded-xl overflow-hidden relative group flex flex-col active:scale-98 transition"
                               >
-                                <div onClick={() => openAnimeDetails(anime)} className="cursor-pointer flex-1 flex flex-col">
+                                <div
+                                  onClick={() => {
+                                    if (anime && !anime.title.startsWith('Anime #')) {
+                                      openAnimeDetails(anime);
+                                    } else {
+                                      api.getAnimeInfo(cleanId).then((inf) => {
+                                        if (inf) openAnimeDetails(inf);
+                                      });
+                                    }
+                                  }}
+                                  className="cursor-pointer flex-1 flex flex-col"
+                                >
                                   <div className="aspect-[2/3] relative overflow-hidden bg-black">
                                     <img src={anime.image} alt={anime.title} className="w-full h-full object-cover group-hover:scale-105 transition duration-300" />
                                   </div>

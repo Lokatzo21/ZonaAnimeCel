@@ -23,6 +23,7 @@ import {
   Star,
   Layers,
   ArrowLeft,
+  ArrowDown,
   Eye,
   EyeOff,
   Heart,
@@ -317,17 +318,75 @@ export default function App() {
     });
   };
 
-  // Helper to normalize continue watching data and eliminate NaNm NaNs
-  const normalizeContinueItem = (item: any) => {
+  // Pull-to-refresh state (arrastrar hacia abajo para recargar la app)
+  const [pullDistance, setPullDistance] = useState(0);
+  const [isRefreshing, setIsRefreshing] = useState(false);
+  const touchStartY = useRef<number | null>(null);
+  const isPulling = useRef(false);
+
+  // Video Progress tracking (sincroniza posiciones de reproducción exactas con la Web y Supabase)
+  const [videoProgress, setVideoProgress] = useState<Record<string, number>>(() => {
+    try {
+      const s = localStorage.getItem('animezona_video_progress') || localStorage.getItem('videoProgress');
+      return s ? JSON.parse(s) : {};
+    } catch {
+      return {};
+    }
+  });
+  const videoProgressRef = useRef<Record<string, number>>(videoProgress);
+  useEffect(() => {
+    videoProgressRef.current = videoProgress;
+  }, [videoProgress]);
+
+  const saveVideoProgress = (vp: Record<string, number>) => {
+    setVideoProgress(vp);
+    videoProgressRef.current = vp;
+    localStorage.setItem('animezona_video_progress', JSON.stringify(vp));
+    localStorage.setItem('videoProgress', JSON.stringify(vp));
+    if (userId) syncService.saveUserKey(userId, 'videoProgress', vp);
+  };
+
+  // Helper to normalize continue watching data and eliminate NaNm NaNs, resolving exact time and season from Web
+  const normalizeContinueItem = (item: any, customVp?: Record<string, number>) => {
     if (!item) return null;
     const animeId = item.animeId || item.id || item.anime_id || '';
+    if (!animeId || animeId === '[object Object]') return null;
     const title = item.title || item.anime_title || item.name || 'Anime';
     const image = item.image || item.poster || item.banner || 'https://images.unsplash.com/photo-1578632767115-351597cf2477?w=500&q=80';
-    const seasonNum = Number(item.seasonNum || item.season || item.season_number || 1) || 1;
-    const episodeNum = Number(item.episodeNum || item.episode || item.episode_number || item.epNum || 1) || 1;
+    
+    // 1. Extraer temporada (compatibilidad web y regex en títulos/nombres)
+    let seasonNum = Number(item.seasonNum || item.seasonNumber || item.season || item.season_number || 0);
+    if (!seasonNum || isNaN(seasonNum) || seasonNum < 1) {
+      const textToSearch = `${item.episodeName || ''} ${item.title || ''}`;
+      const sMatch = textToSearch.match(/T(\d+)/i) || textToSearch.match(/Temporada\s*(\d+)/i);
+      if (sMatch) seasonNum = parseInt(sMatch[1], 10);
+      else seasonNum = 1;
+    }
+
+    // 2. Extraer número de episodio (soportar camelCase episodeNumber y episodeId de la Web)
+    const rawEpNum = item.episodeNum || item.episodeNumber || item.episode || item.episode_number || item.episodeId || item.epNum || 1;
+    const episodeNum = Number(rawEpNum) || 1;
     const episodeName = item.episodeName || item.episode_name || item.epTitle || `Episodio ${episodeNum}`;
-    const rawTime = Number(item.time ?? item.current_time ?? item.currentTime ?? item.progress ?? item.timestamp ?? 0);
-    const time = isNaN(rawTime) || rawTime < 0 ? 0 : rawTime;
+    
+    // 3. Extraer tiempo en segundos (minutos/segundos de reproducción)
+    let rawTime = Number(item.time ?? item.timestamp ?? item.currentTime ?? item.progress ?? item.current_time ?? 0);
+    if (isNaN(rawTime) || rawTime < 0) rawTime = 0;
+
+    // Si rawTime viene en 0 desde la Web, buscar en el mapa videoProgress
+    if (rawTime === 0) {
+      const vp = customVp || videoProgressRef.current || videoProgress;
+      if (vp && typeof vp === 'object') {
+        const key1 = `${animeId}-${episodeNum}`;
+        const key2 = item.episodeId ? `${animeId}-${item.episodeId}` : '';
+        const key3 = String(animeId);
+        const found = vp[key1] ?? (key2 ? vp[key2] : undefined) ?? vp[key3];
+        if (found != null && !isNaN(Number(found)) && Number(found) > 0) {
+          rawTime = Number(found);
+        }
+      }
+    }
+
+    const time = rawTime;
     const rawDuration = Number(item.duration ?? item.totalDuration ?? item.total_time ?? 1440);
     const duration = isNaN(rawDuration) || rawDuration <= 0 ? 1440 : rawDuration;
 
@@ -352,7 +411,7 @@ export default function App() {
       if (!s) return [];
       const parsed = JSON.parse(s);
       if (!Array.isArray(parsed)) return [];
-      return parsed.map(normalizeContinueItem).filter(Boolean) as any[];
+      return parsed.map((item) => normalizeContinueItem(item)).filter(Boolean) as any[];
     } catch {
       return [];
     }
@@ -452,6 +511,226 @@ export default function App() {
     setTimeout(() => setToastMessage(null), 3500);
   };
 
+  // Carga inicial de datos de catálogo y recomendaciones
+  const loadInitialData = async () => {
+    setLoading(true);
+    try {
+      const [trending, top, initialCatalog] = await Promise.all([
+        api.getTrendingAnime(),
+        api.getTopAnime(),
+        api.getDiscoverAnime('Todos', '', 1)
+      ]);
+      setTrendingAnimes(trending);
+      setTopAnimes(top);
+      setCatalogAnimes(initialCatalog);
+    } catch (e) {
+      console.error(e);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const refreshSecretCatalog = async () => {
+    const secret = await api.getSecretAnimes();
+    setSecretAnimes(secret);
+  };
+
+  // Aplica los datos descargados de Supabase (user_sync) actualizando el estado local y localStorage
+  const applyCloudData = (cloudData: Record<string, any>) => {
+    if (!cloudData || typeof cloudData !== 'object') return;
+
+    // 1. Sincronizar videoProgress exacto de la Web
+    let vpMap: Record<string, number> = {};
+    if (cloudData.videoProgress && typeof cloudData.videoProgress === 'object') {
+      vpMap = cloudData.videoProgress;
+      setVideoProgress(vpMap);
+      videoProgressRef.current = vpMap;
+      localStorage.setItem('animezona_video_progress', JSON.stringify(vpMap));
+      localStorage.setItem('videoProgress', JSON.stringify(vpMap));
+    } else {
+      vpMap = videoProgressRef.current || {};
+    }
+
+    // 2. Continuar Viendo con normalización de tiempo, temporada y episodio
+    if (cloudData.continueWatching && Array.isArray(cloudData.continueWatching)) {
+      const cleanCw = cloudData.continueWatching
+        .map((item: any) => normalizeContinueItem(item, vpMap))
+        .filter(Boolean) as any[];
+      setContinueWatching(cleanCw);
+      localStorage.setItem('animezona_continue', JSON.stringify(cleanCw));
+      localStorage.setItem('continueWatching', JSON.stringify(cleanCw));
+    }
+
+    // 3. Favoritos y Objetos completos
+    if (cloudData.favoriteAnimes && Array.isArray(cloudData.favoriteAnimes)) {
+      const cleanFavs = cloudData.favoriteAnimes
+        .map((item: any) => (typeof item === 'object' && item !== null ? String(item.id || item.animeId || '') : String(item)))
+        .filter((id: string) => id && id !== '[object Object]');
+      const objs = cloudData.favoriteAnimes.filter((item: any) => item && typeof item === 'object' && item.title);
+      if (objs.length > 0) {
+        setFavoriteAnimesData((prev) => {
+          const map = new Map<string, MappedAnime>();
+          [...prev, ...objs].forEach((a) => {
+            if (a && a.id) map.set(String(a.id), a);
+          });
+          const arr = Array.from(map.values());
+          localStorage.setItem('animezona_fav_objects', JSON.stringify(arr));
+          return arr;
+        });
+      }
+      setFavorites(cleanFavs);
+      localStorage.setItem('animezona_favs', JSON.stringify(cleanFavs));
+      localStorage.setItem('favoriteAnimes', JSON.stringify(cleanFavs));
+    }
+
+    // 4. Listas personalizadas
+    if (cloudData.customLists && Array.isArray(cloudData.customLists)) {
+      setCustomLists(cloudData.customLists);
+      localStorage.setItem('customLists', JSON.stringify(cloudData.customLists));
+    }
+
+    // 5. Historial (Animes vistos)
+    if (cloudData.watchedAnimes && Array.isArray(cloudData.watchedAnimes)) {
+      setWatchedAnimesList(cloudData.watchedAnimes);
+      localStorage.setItem('animezona_watched_animes', JSON.stringify(cloudData.watchedAnimes));
+      localStorage.setItem('watchedAnimes', JSON.stringify(cloudData.watchedAnimes));
+    }
+
+    // 6. Episodios vistos
+    if (cloudData.watchedEpisodes && Array.isArray(cloudData.watchedEpisodes)) {
+      setWatchedEpisodes(cloudData.watchedEpisodes);
+      localStorage.setItem('watchedEpisodes', JSON.stringify(cloudData.watchedEpisodes));
+      localStorage.setItem('animezona_watched_episodes', JSON.stringify(cloudData.watchedEpisodes));
+    }
+
+    // 7. Favoritos secretos
+    if (cloudData.secretLikes && Array.isArray(cloudData.secretLikes)) {
+      const cleanSecrets = cleanIdList(cloudData.secretLikes);
+      setSecretFavorites(cleanSecrets);
+      localStorage.setItem('animezona_secret_favs', JSON.stringify(cleanSecrets));
+      localStorage.setItem('secretLikes', JSON.stringify(cloudData.secretLikes));
+    }
+
+    // 8. Recomendaciones ocultas
+    if (cloudData.hiddenAnimes && Array.isArray(cloudData.hiddenAnimes)) {
+      const cleanHidden = cleanIdList(cloudData.hiddenAnimes);
+      setHiddenRecommendations(cleanHidden);
+      localStorage.setItem('animezona_hidden_recommendations', JSON.stringify(cleanHidden));
+      localStorage.setItem('hiddenAnimes', JSON.stringify(cleanHidden));
+    }
+  };
+
+  // Función principal para Pull-To-Refresh (arrastrar hacia abajo para recargar la aplicación en todas las vistas)
+  const handlePullRefresh = async () => {
+    try {
+      await Promise.all([
+        loadInitialData(),
+        refreshSecretCatalog()
+      ]);
+
+      // Si está viendo la ficha de un anime específico (sin reproductor activo), refrescar ficha y episodios
+      if (selectedAnime && !currentEpisode) {
+        try {
+          const [info, eps] = await Promise.all([
+            api.getAnimeInfo(selectedAnime.id),
+            api.getAnimeEpisodes(selectedAnime.id, selectedAnime.title)
+          ]);
+          if (info) setSelectedAnime(info);
+          if (eps && eps.length > 0) setEpisodesList(eps);
+        } catch {}
+      }
+
+      // Si hay sesión iniciada, recargar datos frescos desde Supabase
+      if (userId) {
+        const cloudData = await syncService.loadUserData(userId);
+        applyCloudData(cloudData);
+      }
+
+      showToast('✨ Aplicación actualizada');
+    } catch (err) {
+      console.error('Error al actualizar datos:', err);
+      showToast('Error al actualizar datos');
+    }
+  };
+
+  // Touch handlers para Pull-to-refresh
+  const handleTouchStart = (e: React.TouchEvent<HTMLDivElement>) => {
+    if (currentEpisode) return; // Evitar interferir mientras reproduce video
+    if (mainScrollRef.current && mainScrollRef.current.scrollTop <= 5 && !isRefreshing) {
+      touchStartY.current = e.touches[0].clientY;
+      isPulling.current = true;
+    } else {
+      touchStartY.current = null;
+      isPulling.current = false;
+    }
+  };
+
+  const handleTouchMove = (e: React.TouchEvent<HTMLDivElement>) => {
+    if (!isPulling.current || touchStartY.current === null || isRefreshing) return;
+    if (mainScrollRef.current && mainScrollRef.current.scrollTop > 5) {
+      isPulling.current = false;
+      setPullDistance(0);
+      return;
+    }
+    const currentY = e.touches[0].clientY;
+    const deltaY = currentY - touchStartY.current;
+    if (deltaY > 0) {
+      const distance = Math.min(85, deltaY * 0.42);
+      setPullDistance(distance);
+    } else {
+      setPullDistance(0);
+    }
+  };
+
+  const handleTouchEnd = async () => {
+    if (!isPulling.current || touchStartY.current === null) return;
+    isPulling.current = false;
+    touchStartY.current = null;
+
+    if (pullDistance >= 55 && !isRefreshing) {
+      setIsRefreshing(true);
+      setPullDistance(50);
+      try {
+        await handlePullRefresh();
+      } finally {
+        setIsRefreshing(false);
+        setPullDistance(0);
+      }
+    } else {
+      setPullDistance(0);
+    }
+  };
+
+  // Mouse drag compatibility (para pruebas en navegador / PC)
+  const handleMouseDown = (e: React.MouseEvent<HTMLDivElement>) => {
+    if (currentEpisode || isRefreshing) return;
+    if (mainScrollRef.current && mainScrollRef.current.scrollTop <= 5) {
+      touchStartY.current = e.clientY;
+      isPulling.current = true;
+    }
+  };
+
+  const handleMouseMove = (e: React.MouseEvent<HTMLDivElement>) => {
+    if (!isPulling.current || touchStartY.current === null || isRefreshing) return;
+    if (mainScrollRef.current && mainScrollRef.current.scrollTop > 5) {
+      isPulling.current = false;
+      setPullDistance(0);
+      return;
+    }
+    const deltaY = e.clientY - touchStartY.current;
+    if (deltaY > 0) {
+      const distance = Math.min(85, deltaY * 0.42);
+      setPullDistance(distance);
+    } else {
+      setPullDistance(0);
+    }
+  };
+
+  const handleMouseUp = () => {
+    if (!isPulling.current || touchStartY.current === null) return;
+    handleTouchEnd();
+  };
+
   // Initial Data Load
   useEffect(() => {
     loadInitialData();
@@ -471,53 +750,7 @@ export default function App() {
 
         // Load persisted cloud data from user_sync table
         const cloudData = await syncService.loadUserData(session.user.id);
-        if (cloudData.favoriteAnimes && Array.isArray(cloudData.favoriteAnimes)) {
-          const cleanFavs = cloudData.favoriteAnimes
-            .map((item: any) => (typeof item === 'object' && item !== null ? String(item.id || item.animeId || '') : String(item)))
-            .filter((id: string) => id && id !== '[object Object]');
-          const objs = cloudData.favoriteAnimes.filter((item: any) => item && typeof item === 'object' && item.title);
-          if (objs.length > 0) {
-            setFavoriteAnimesData((prev) => {
-              const map = new Map<string, MappedAnime>();
-              [...prev, ...objs].forEach((a) => {
-                if (a && a.id) map.set(String(a.id), a);
-              });
-              const arr = Array.from(map.values());
-              localStorage.setItem('animezona_fav_objects', JSON.stringify(arr));
-              return arr;
-            });
-          }
-          setFavorites(cleanFavs);
-          localStorage.setItem('favoriteAnimes', JSON.stringify(cleanFavs));
-        }
-        if (cloudData.continueWatching && Array.isArray(cloudData.continueWatching)) {
-          const cleanCw = cloudData.continueWatching.map(normalizeContinueItem).filter(Boolean) as any[];
-          setContinueWatching(cleanCw);
-          localStorage.setItem('continueWatching', JSON.stringify(cleanCw));
-        }
-        if (cloudData.customLists && Array.isArray(cloudData.customLists)) {
-          setCustomLists(cloudData.customLists);
-          localStorage.setItem('customLists', JSON.stringify(cloudData.customLists));
-        }
-        if (cloudData.watchedAnimes && Array.isArray(cloudData.watchedAnimes)) {
-          setWatchedAnimesList(cloudData.watchedAnimes);
-          localStorage.setItem('watchedAnimes', JSON.stringify(cloudData.watchedAnimes));
-        }
-        if (cloudData.watchedEpisodes && Array.isArray(cloudData.watchedEpisodes)) {
-          setWatchedEpisodes(cloudData.watchedEpisodes);
-          localStorage.setItem('watchedEpisodes', JSON.stringify(cloudData.watchedEpisodes));
-          localStorage.setItem('animezona_watched_episodes', JSON.stringify(cloudData.watchedEpisodes));
-        }
-        if (cloudData.secretLikes && Array.isArray(cloudData.secretLikes)) {
-          const cleanSecrets = cleanIdList(cloudData.secretLikes);
-          setSecretFavorites(cleanSecrets);
-          localStorage.setItem('secretLikes', JSON.stringify(cleanSecrets));
-        }
-        if (cloudData.hiddenAnimes && Array.isArray(cloudData.hiddenAnimes)) {
-          const cleanHidden = cleanIdList(cloudData.hiddenAnimes);
-          setHiddenRecommendations(cleanHidden);
-          localStorage.setItem('hiddenAnimes', JSON.stringify(cleanHidden));
-        }
+        applyCloudData(cloudData);
       }
     });
 
@@ -548,29 +781,6 @@ export default function App() {
     }, 7000);
     return () => clearInterval(interval);
   }, [trendingAnimes]);
-
-  const loadInitialData = async () => {
-    setLoading(true);
-    try {
-      const [trending, top, initialCatalog] = await Promise.all([
-        api.getTrendingAnime(),
-        api.getTopAnime(),
-        api.getDiscoverAnime('Todos', '', 1)
-      ]);
-      setTrendingAnimes(trending);
-      setTopAnimes(top);
-      setCatalogAnimes(initialCatalog);
-    } catch (e) {
-      console.error(e);
-    } finally {
-      setLoading(false);
-    }
-  };
-
-  const refreshSecretCatalog = async () => {
-    const secret = await api.getSecretAnimes();
-    setSecretAnimes(secret);
-  };
 
   // Unified Auto-sync and resolution of missing anime metadata for Favorites, Secret Favorites, and Hidden Animes
   useEffect(() => {
@@ -1018,7 +1228,17 @@ export default function App() {
     const webCw = cw.map((item: any) => ({
       ...item,
       id: item.animeId || item.id,
-      timestamp: item.time ?? item.timestamp ?? 0
+      animeId: item.animeId || item.id,
+      season: item.seasonNum || 1,
+      seasonNum: item.seasonNum || 1,
+      seasonNumber: item.seasonNum || 1,
+      episode: item.episodeNum || 1,
+      episodeNum: item.episodeNum || 1,
+      episodeNumber: item.episodeNum || 1,
+      episodeId: item.episodeNum || 1,
+      timestamp: item.time ?? item.timestamp ?? 0,
+      time: item.time ?? item.timestamp ?? 0,
+      progress: item.time ?? item.timestamp ?? 0
     }));
     localStorage.setItem('continueWatching', JSON.stringify(webCw));
     if (userId) syncService.saveUserKey(userId, 'continueWatching', webCw);
@@ -1423,6 +1643,10 @@ export default function App() {
         return item;
       });
       saveContinueWatching(updated);
+
+      const epKey = `${selectedAnime.id}-${currentEpisode.episode_number}`;
+      const newVp = { ...(videoProgressRef.current || {}), [epKey]: current };
+      saveVideoProgress(newVp);
     }
   };
 
@@ -1561,54 +1785,7 @@ export default function App() {
 
           // Load cloud data from user_sync
           const cloudData = await syncService.loadUserData(data.user.id);
-          if (cloudData.favoriteAnimes && Array.isArray(cloudData.favoriteAnimes)) {
-            const cleanFavs = cleanIdList(cloudData.favoriteAnimes);
-            const objs = cloudData.favoriteAnimes.filter((item: any) => item && typeof item === 'object' && item.title);
-            if (objs.length > 0) {
-              setFavoriteAnimesData((prev) => {
-                const map = new Map<string, MappedAnime>();
-                [...prev, ...objs].forEach((a) => {
-                  if (a && a.id) map.set(String(a.id), a);
-                });
-                const arr = Array.from(map.values());
-                localStorage.setItem('animezona_fav_objects', JSON.stringify(arr));
-                return arr;
-              });
-            }
-            setFavorites(cleanFavs);
-            localStorage.setItem('animezona_favs', JSON.stringify(cleanFavs));
-            localStorage.setItem('favoriteAnimes', JSON.stringify(cloudData.favoriteAnimes));
-          }
-          if (cloudData.continueWatching && Array.isArray(cloudData.continueWatching)) {
-            const cleanCw = cloudData.continueWatching.map(normalizeContinueItem).filter(Boolean) as any[];
-            setContinueWatching(cleanCw);
-            localStorage.setItem('continueWatching', JSON.stringify(cleanCw));
-          }
-          if (cloudData.customLists && Array.isArray(cloudData.customLists)) {
-            setCustomLists(cloudData.customLists);
-            localStorage.setItem('customLists', JSON.stringify(cloudData.customLists));
-          }
-          if (cloudData.watchedAnimes && Array.isArray(cloudData.watchedAnimes)) {
-            setWatchedAnimesList(cloudData.watchedAnimes);
-            localStorage.setItem('watchedAnimes', JSON.stringify(cloudData.watchedAnimes));
-          }
-          if (cloudData.watchedEpisodes && Array.isArray(cloudData.watchedEpisodes)) {
-            setWatchedEpisodes(cloudData.watchedEpisodes);
-            localStorage.setItem('watchedEpisodes', JSON.stringify(cloudData.watchedEpisodes));
-            localStorage.setItem('animezona_watched_episodes', JSON.stringify(cloudData.watchedEpisodes));
-          }
-          if (cloudData.secretLikes && Array.isArray(cloudData.secretLikes)) {
-            const cleanSecrets = cleanIdList(cloudData.secretLikes);
-            setSecretFavorites(cleanSecrets);
-            localStorage.setItem('animezona_secret_favs', JSON.stringify(cleanSecrets));
-            localStorage.setItem('secretLikes', JSON.stringify(cloudData.secretLikes));
-          }
-          if (cloudData.hiddenAnimes && Array.isArray(cloudData.hiddenAnimes)) {
-            const cleanHidden = cleanIdList(cloudData.hiddenAnimes);
-            setHiddenRecommendations(cleanHidden);
-            localStorage.setItem('animezona_hidden_recommendations', JSON.stringify(cleanHidden));
-            localStorage.setItem('hiddenAnimes', JSON.stringify(cloudData.hiddenAnimes));
-          }
+          applyCloudData(cloudData);
 
           showToast(`¡Bienvenido de vuelta, ${name}!`);
         }
@@ -1826,8 +2003,43 @@ export default function App() {
               loadMoreCatalog();
             }
           }}
-          className="flex-1 overflow-y-auto pb-28"
+          onTouchStart={handleTouchStart}
+          onTouchMove={handleTouchMove}
+          onTouchEnd={handleTouchEnd}
+          onMouseDown={handleMouseDown}
+          onMouseMove={handleMouseMove}
+          onMouseUp={handleMouseUp}
+          style={{ overscrollBehaviorY: 'contain' }}
+          className="flex-1 overflow-y-auto pb-28 relative"
         >
+          {/* BANNER / INDICADOR VISUAL PULL-TO-REFRESH */}
+          <div
+            style={{
+              height: `${pullDistance}px`,
+              opacity: pullDistance > 0 || isRefreshing ? Math.min(1, Math.max(0, pullDistance / 40)) : 0,
+              transition: touchStartY.current === null ? 'height 0.28s cubic-bezier(0.4, 0, 0.2, 1), opacity 0.28s ease' : 'none'
+            }}
+            className="w-full flex items-center justify-center overflow-hidden pointer-events-none select-none shrink-0"
+          >
+            <div className="flex items-center gap-2 py-1.5 px-3.5 rounded-full bg-[#121620]/95 border border-[#232b3e] shadow-xl backdrop-blur-md">
+              {isRefreshing ? (
+                <>
+                  <RefreshCw className="w-3.5 h-3.5 text-[#a855f7] animate-spin shrink-0" />
+                  <span className="text-[11px] font-bold text-slate-200">Actualizando...</span>
+                </>
+              ) : (
+                <>
+                  <ArrowDown
+                    className="w-3.5 h-3.5 text-[#a855f7] shrink-0 transition-transform duration-200"
+                    style={{ transform: pullDistance >= 55 ? 'rotate(180deg)' : 'rotate(0deg)' }}
+                  />
+                  <span className="text-[11px] font-bold text-slate-300">
+                    {pullDistance >= 55 ? 'Suelta para actualizar' : 'Desliza para actualizar'}
+                  </span>
+                </>
+              )}
+            </div>
+          </div>
           {/* ============================================================== */}
           {/* SCREEN 1: WATCH EPISODE (MATCHING USER'S IMAGE 2)              */}
           {/* ============================================================== */}

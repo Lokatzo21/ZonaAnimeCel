@@ -79,6 +79,64 @@ const cleanIdList = (list: any[]): string[] => {
     .filter((id) => id && id !== '[object Object]' && id !== 'null' && id !== 'undefined');
 };
 
+// Helper to consolidate favorites on startup from all local storage keys
+const getInitialSavedFavorites = (): { ids: string[]; objects: MappedAnime[] } => {
+  const idSet = new Set<string>();
+  const objMap = new Map<string, MappedAnime>();
+
+  const tryParse = (key: string) => {
+    try {
+      const raw = localStorage.getItem(key);
+      if (!raw) return [];
+      const parsed = JSON.parse(raw);
+      return Array.isArray(parsed) ? parsed : [];
+    } catch {
+      return [];
+    }
+  };
+
+  const favAnimes = tryParse('favoriteAnimes');
+  const favObjects = tryParse('animezona_fav_objects');
+  const favIds = tryParse('animezona_favs');
+
+  [...favAnimes, ...favObjects].forEach((item: any) => {
+    if (item && typeof item === 'object' && item.id) {
+      const idStr = String(item.id).trim();
+      if (idStr && idStr !== '[object Object]' && idStr !== 'null' && idStr !== 'undefined') {
+        idSet.add(idStr);
+        if (item.title && !String(item.title).startsWith('Anime #')) {
+          objMap.set(idStr, {
+            ...item,
+            id: idStr,
+            title: item.title,
+            image: item.image || item.poster || item.banner || 'https://images.unsplash.com/photo-1578632767115-351597cf2477?w=500&q=80',
+            banner: item.banner || item.backdrop || '',
+            score: item.score || '9.0',
+            type: item.type || 'Anime'
+          });
+        }
+      }
+    } else if (typeof item === 'string' || typeof item === 'number') {
+      const idStr = String(item).trim();
+      if (idStr && idStr !== '[object Object]' && idStr !== 'null' && idStr !== 'undefined') {
+        idSet.add(idStr);
+      }
+    }
+  });
+
+  favIds.forEach((item: any) => {
+    const idStr = String(typeof item === 'object' ? item.id : item).trim();
+    if (idStr && idStr !== '[object Object]' && idStr !== 'null' && idStr !== 'undefined') {
+      idSet.add(idStr);
+    }
+  });
+
+  return {
+    ids: Array.from(idSet),
+    objects: Array.from(objMap.values())
+  };
+};
+
 export default function App() {
   // Current authenticated user id
   const [userId, setUserId] = useState<string | null>(null);
@@ -231,40 +289,12 @@ export default function App() {
 
   // Stores: Support both website keys (favoriteAnimes, customLists, etc.) and app keys
   const [favorites, setFavorites] = useState<string[]>(() => {
-    try {
-      const s = localStorage.getItem('animezona_favs') || localStorage.getItem('favoriteAnimes');
-      if (!s) return [];
-      return cleanIdList(JSON.parse(s));
-    } catch {
-      return [];
-    }
+    return getInitialSavedFavorites().ids;
   });
 
   // Cached full objects for favorite animes so they ALWAYS display and never get stuck loading
   const [favoriteAnimesData, setFavoriteAnimesData] = useState<MappedAnime[]>(() => {
-    try {
-      const s = localStorage.getItem('animezona_fav_objects');
-      const sAlt = localStorage.getItem('animezona_favs') || localStorage.getItem('favoriteAnimes');
-      let arr: MappedAnime[] = [];
-      if (s) {
-        const parsed = JSON.parse(s);
-        if (Array.isArray(parsed)) arr = parsed.filter((a) => a && a.id && a.title && !a.title.startsWith('Anime #'));
-      }
-      if (sAlt) {
-        const parsedAlt = JSON.parse(sAlt);
-        if (Array.isArray(parsedAlt)) {
-          const objs = parsedAlt.filter((a) => a && typeof a === 'object' && a.id && a.title && !a.title.startsWith('Anime #'));
-          arr = [...arr, ...objs];
-        }
-      }
-      const map = new Map<string, MappedAnime>();
-      arr.forEach((a) => {
-        if (a && a.id) map.set(String(a.id), a);
-      });
-      return Array.from(map.values());
-    } catch {
-      return [];
-    }
+    return getInitialSavedFavorites().objects;
   });
 
   const [hiddenRecommendations, setHiddenRecommendations] = useState<string[]>(() => {
@@ -1262,8 +1292,10 @@ export default function App() {
       };
     });
 
+    setFavoriteAnimesData(fullObjects);
+    localStorage.setItem('animezona_fav_objects', JSON.stringify(fullObjects));
     localStorage.setItem('favoriteAnimes', JSON.stringify(fullObjects));
-    if (userId) syncService.saveUserKey(userId, 'favoriteAnimes', fullObjects);
+    syncService.saveUserKey(userId, 'favoriteAnimes', fullObjects);
   };
 
   const saveSecretFavorites = (sf: string[]) => {
@@ -1281,7 +1313,7 @@ export default function App() {
     });
 
     localStorage.setItem('secretLikes', JSON.stringify(fullObjs));
-    if (userId) syncService.saveUserKey(userId, 'secretLikes', fullObjs);
+    syncService.saveUserKey(userId, 'secretLikes', fullObjs);
   };
 
   const saveHidden = (hidden: string[]) => {
@@ -1298,7 +1330,7 @@ export default function App() {
     });
 
     localStorage.setItem('hiddenAnimes', JSON.stringify(fullObjs));
-    if (userId) syncService.saveUserKey(userId, 'hiddenAnimes', fullObjs);
+    syncService.saveUserKey(userId, 'hiddenAnimes', fullObjs);
   };
 
   const saveContinueWatching = (cw: typeof continueWatching) => {
@@ -1320,21 +1352,21 @@ export default function App() {
       progress: item.time ?? item.timestamp ?? 0
     }));
     localStorage.setItem('continueWatching', JSON.stringify(webCw));
-    if (userId) syncService.saveUserKey(userId, 'continueWatching', webCw);
+    syncService.saveUserKey(userId, 'continueWatching', webCw);
   };
 
   const saveWatchedAnimes = (wa: MappedAnime[]) => {
     setWatchedAnimesList(wa);
     localStorage.setItem('animezona_watched_animes', JSON.stringify(wa));
     localStorage.setItem('watchedAnimes', JSON.stringify(wa));
-    if (userId) syncService.saveUserKey(userId, 'watchedAnimes', wa);
+    syncService.saveUserKey(userId, 'watchedAnimes', wa);
   };
 
   const saveWatchedEpisodes = (eps: string[]) => {
     setWatchedEpisodes(eps);
     localStorage.setItem('animezona_watched_episodes', JSON.stringify(eps));
     localStorage.setItem('watchedEpisodes', JSON.stringify(eps));
-    if (userId) syncService.saveUserKey(userId, 'watchedEpisodes', eps);
+    syncService.saveUserKey(userId, 'watchedEpisodes', eps);
   };
 
   const isEpisodeWatched = (animeId: string | number, epId?: number, epNum?: number) => {
@@ -1390,33 +1422,21 @@ export default function App() {
     return true;
   };
 
-  // Helper to accurately determine if an anime is in favorites (by ID or Title)
+  // Helper to accurately determine if an anime is in favorites
   const isAnimeFavorited = (anime: MappedAnime | { id: string | number; title?: string } | null | undefined): boolean => {
     if (!anime) return false;
     const idStr = String(anime.id).trim();
-    const titleLower = anime.title ? anime.title.trim().toLowerCase() : '';
+    if (!idStr || idStr === '[object Object]') return false;
 
-    if (
-      favorites.some((f: any) => {
-        const fId = typeof f === 'object' && f !== null ? String(f.id || '').trim() : String(f).trim();
-        return fId === idStr;
-      })
-    ) return true;
-
-    if (titleLower) {
-      if (favoriteAnimesData.some((fav) => fav.title && fav.title.trim().toLowerCase() === titleLower)) return true;
-      if (
-        favorites.some((f: any) => {
-          const fTitle = typeof f === 'object' && f !== null ? String(f.title || '').trim().toLowerCase() : String(f).trim().toLowerCase();
-          return fTitle === titleLower;
-        })
-      ) return true;
-    }
-    return false;
+    return favorites.some((f: any) => {
+      const fId = typeof f === 'object' && f !== null ? String(f.id || '').trim() : String(f).trim();
+      return fId === idStr;
+    });
   };
 
   // Toggle Favorite & 5-Second Long Press for Secret Favorites
-  const handleLikeTouchStart = (animeOrId: MappedAnime | string | number) => {
+  const handleLikeTouchStart = (animeOrId: MappedAnime | string | number, e?: any) => {
+    if (e && e.stopPropagation) e.stopPropagation();
     isSecretLongPressRef.current = false;
     pressTimerRef.current = setTimeout(() => {
       isSecretLongPressRef.current = true;
@@ -1467,8 +1487,12 @@ export default function App() {
   };
 
   const handleLikeTouchEnd = cancelLikePress;
-  const handleLikePointerDown = handleLikeTouchStart;
-  const handleLikePointerUp = cancelLikePress;
+  const handleLikePointerDown = (anime: any) => {
+    handleLikeTouchStart(anime);
+  };
+  const handleLikePointerUp = () => {
+    cancelLikePress();
+  };
 
   const toggleFavorite = (anime: MappedAnime | string | number, e?: any) => {
     if (e) {
@@ -1497,54 +1521,58 @@ export default function App() {
     const isFav = isAnimeFavorited(animeObj || { id: idStr });
     const cleanCurrent = cleanIdList(favorites);
 
-    let updatedFavorites: string[];
-    let updatedData: MappedAnime[] = [];
     if (isFav) {
-      const titleLower = animeObj?.title?.trim().toLowerCase();
-      updatedFavorites = cleanCurrent.filter((f) => {
-        if (f === idStr) return false;
-        if (titleLower && f.toLowerCase() === titleLower) return false;
-        return true;
-      });
-      updatedData = favoriteAnimesData.filter((a) => {
-        if (String(a.id).trim() === idStr) return false;
-        if (titleLower && a.title && a.title.trim().toLowerCase() === titleLower) return false;
-        return true;
-      });
-      setFavoriteAnimesData(updatedData);
-      localStorage.setItem('animezona_fav_objects', JSON.stringify(updatedData));
+      const updatedFavorites = cleanCurrent.filter((f) => f !== idStr);
+      const updatedData = favoriteAnimesData.filter((a) => String(a.id).trim() !== idStr);
       showToast('Eliminado de Favoritos');
       saveFavorites(updatedFavorites, updatedData);
     } else {
-      updatedFavorites = [...cleanCurrent.filter((f) => f !== idStr), idStr];
       const targetObj = (animeObj && animeObj.title && !animeObj.title.startsWith('Anime #')) 
         ? animeObj 
         : findAnimeInCache(idStr);
 
-      if (targetObj && targetObj.title && !targetObj.title.startsWith('Anime #')) {
-        cacheAnime(targetObj);
-        updatedData = [
-          ...favoriteAnimesData.filter((a) => String(a.id).trim() !== idStr),
-          targetObj
-        ];
-        setFavoriteAnimesData(updatedData);
-        localStorage.setItem('animezona_fav_objects', JSON.stringify(updatedData));
-        saveFavorites(updatedFavorites, updatedData);
-      } else {
-        saveFavorites(updatedFavorites);
+      const fullObj: MappedAnime = (targetObj && targetObj.title && !targetObj.title.startsWith('Anime #'))
+        ? {
+            ...targetObj,
+            id: idStr,
+            title: targetObj.title,
+            image: targetObj.image || (targetObj as any).coverImage || '',
+            score: targetObj.score || '9.0',
+            type: targetObj.type || 'Anime',
+            banner: targetObj.banner || targetObj.backdrop || '',
+            description: targetObj.description || ''
+          }
+        : {
+            id: idStr,
+            title: 'Anime #' + idStr,
+            image: 'https://images.unsplash.com/photo-1578632767115-351597cf2477?w=500&q=80',
+            score: '9.0',
+            type: 'Anime',
+            description: ''
+          };
+
+      const updatedFavorites = [...cleanCurrent.filter((f) => f !== idStr), idStr];
+      const updatedData = [
+        ...favoriteAnimesData.filter((a) => String(a.id).trim() !== idStr),
+        fullObj
+      ];
+      saveFavorites(updatedFavorites, updatedData);
+      showToast('Añadido a Favoritos ❤️');
+
+      if (!targetObj || !targetObj.title || targetObj.title.startsWith('Anime #')) {
         api.getAnimeInfo(idStr).then((info) => {
           if (info && info.title && !info.title.startsWith('Anime #')) {
             cacheAnime(info);
             setFavoriteAnimesData((prev) => {
               const u = [...prev.filter((a) => String(a.id).trim() !== idStr), info];
               localStorage.setItem('animezona_fav_objects', JSON.stringify(u));
-              saveFavorites(updatedFavorites, u);
+              localStorage.setItem('favoriteAnimes', JSON.stringify(u));
+              syncService.saveUserKey(userId, 'favoriteAnimes', u);
               return u;
             });
           }
         });
       }
-      showToast('Añadido a Favoritos ❤️');
     }
   };
 
@@ -2506,11 +2534,16 @@ export default function App() {
 
                     {/* Me Gusta con soporte para 5 segundos long-press secreto */}
                     <button
-                      onClick={(e) => handleLikeClick(selectedAnime, e)}
+                      onClick={(e) => {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        handleLikeClick(selectedAnime, e);
+                      }}
                       onPointerDown={() => handleLikePointerDown(selectedAnime)}
                       onPointerUp={handleLikePointerUp}
                       onPointerLeave={handleLikePointerUp}
                       onPointerCancel={handleLikePointerUp}
+                      style={{ touchAction: 'manipulation' }}
                       className={`px-3 py-0.8 rounded-full text-xs font-semibold flex items-center gap-1.5 transition ${
                         isAnimeFavorited(selectedAnime)
                           ? 'bg-[#3b1219] text-[#f87171] border border-[#7f1d1d]/50'
@@ -2683,7 +2716,12 @@ export default function App() {
                             </button>
 
                             <button
-                              onClick={(e) => toggleFavorite(item, e)}
+                              onClick={(e) => {
+                                e.preventDefault();
+                                e.stopPropagation();
+                                toggleFavorite(item, e);
+                              }}
+                              style={{ touchAction: 'manipulation' }}
                               className={`p-2 rounded-xl border transition ${
                                 isAnimeFavorited(item)
                                   ? 'bg-[#3b1219] border-[#7f1d1d] text-[#f87171]'
@@ -2846,11 +2884,16 @@ export default function App() {
 
                           {/* Botón Me Gusta */}
                           <button
-                            onClick={(e) => handleLikeClick(anime, e)}
+                            onClick={(e) => {
+                              e.preventDefault();
+                              e.stopPropagation();
+                              handleLikeClick(anime, e);
+                            }}
                             onPointerDown={() => handleLikePointerDown(anime)}
                             onPointerUp={handleLikePointerUp}
                             onPointerLeave={handleLikePointerUp}
                             onPointerCancel={handleLikePointerUp}
+                            style={{ touchAction: 'manipulation' }}
                             title="Me gusta"
                             className="absolute top-2 right-2 p-1.5 rounded-full bg-black/70 hover:bg-black text-white transition active:scale-90 z-20"
                           >
@@ -2969,11 +3012,16 @@ export default function App() {
                       </button>
 
                       <button
-                        onClick={(e) => handleLikeClick(anime, e)}
+                        onClick={(e) => {
+                          e.preventDefault();
+                          e.stopPropagation();
+                          handleLikeClick(anime, e);
+                        }}
                         onPointerDown={() => handleLikePointerDown(anime)}
                         onPointerUp={handleLikePointerUp}
                         onPointerLeave={handleLikePointerUp}
                         onPointerCancel={handleLikePointerUp}
+                        style={{ touchAction: 'manipulation' }}
                         title="Me gusta"
                         className="absolute top-2 right-2 p-1.5 rounded-full bg-black/70 hover:bg-black text-white transition active:scale-90 z-20"
                       >
@@ -3019,11 +3067,16 @@ export default function App() {
                             className="w-full h-full object-cover group-hover:scale-105 transition duration-300"
                           />
                           <button
-                            onClick={(e) => handleLikeClick(relAnime, e)}
+                            onClick={(e) => {
+                              e.preventDefault();
+                              e.stopPropagation();
+                              handleLikeClick(relAnime, e);
+                            }}
                             onPointerDown={() => handleLikePointerDown(relAnime)}
                             onPointerUp={handleLikePointerUp}
                             onPointerLeave={handleLikePointerUp}
                             onPointerCancel={handleLikePointerUp}
+                            style={{ touchAction: 'manipulation' }}
                             title="Me gusta"
                             className="absolute top-2 right-2 p-1.5 rounded-full bg-black/70 hover:bg-black text-white transition active:scale-90 z-20"
                           >

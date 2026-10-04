@@ -408,28 +408,70 @@ export const api = {
 
       // 3. Purely Numeric ID: TMDB TV or Movie
       if (/^\d+$/.test(idStr)) {
-        // Try TMDB TV endpoint
+        // Verificar si está registrado en anime_episodes como película de una saga
         try {
-          const url = `${BASE_URL}/tv/${idStr}?api_key=${TMDB_API_KEY}&language=es-MX`;
-          const data = await fetchWithDelay(url);
-          if (data && (data.name || data.original_name || data.title)) {
-            const mapped = mapAnimeData(data);
-            cacheAnime(mapped);
-            return mapped;
+          const { data: dbRows } = await supabase
+            .from('anime_episodes')
+            .select('anime_tmdb_id, search_title, episode_name')
+            .eq('anime_tmdb_id', idStr)
+            .limit(1);
+
+          if (dbRows && dbRows.length > 0) {
+            try {
+              const movieUrl = `${BASE_URL}/movie/${idStr}?api_key=${TMDB_API_KEY}&language=es-MX`;
+              const movieData = await fetchWithDelay(movieUrl);
+              if (movieData && (movieData.title || movieData.original_title)) {
+                const mapped = mapAnimeData({ ...movieData, media_type: 'movie' });
+                mapped.type = 'Película';
+                mapped.totalEpisodes = 1;
+                cacheAnime(mapped);
+                return mapped;
+              }
+            } catch {}
           }
         } catch {}
 
-        // Try TMDB Movie endpoint (for anime movies)
+        let tvData: any = null;
+        let movieData: any = null;
+
+        try {
+          const url = `${BASE_URL}/tv/${idStr}?api_key=${TMDB_API_KEY}&language=es-MX`;
+          tvData = await fetchWithDelay(url);
+        } catch {}
+
         try {
           const movieUrl = `${BASE_URL}/movie/${idStr}?api_key=${TMDB_API_KEY}&language=es-MX`;
-          const movieData = await fetchWithDelay(movieUrl);
-          if (movieData && (movieData.title || movieData.original_title || movieData.name)) {
+          movieData = await fetchWithDelay(movieUrl);
+        } catch {}
+
+        if (tvData && movieData) {
+          const movieVotes = Number(movieData.vote_count || 0);
+          const tvVotes = Number(tvData.vote_count || 0);
+          if (movieVotes > tvVotes * 5) {
             const mapped = mapAnimeData(movieData);
             mapped.type = 'Película';
+            mapped.totalEpisodes = 1;
             cacheAnime(mapped);
             return mapped;
           }
-        } catch {}
+          const mapped = mapAnimeData(tvData);
+          cacheAnime(mapped);
+          return mapped;
+        }
+
+        if (tvData && (tvData.name || tvData.original_name)) {
+          const mapped = mapAnimeData(tvData);
+          cacheAnime(mapped);
+          return mapped;
+        }
+
+        if (movieData && (movieData.title || movieData.original_title)) {
+          const mapped = mapAnimeData(movieData);
+          mapped.type = 'Película';
+          mapped.totalEpisodes = 1;
+          cacheAnime(mapped);
+          return mapped;
+        }
       } else {
         // Non-numeric string: check custom animes by title in Supabase
         const { data: byTitle } = await supabase
@@ -462,10 +504,26 @@ export const api = {
   },
 
   // Get list of episodes
-  getAnimeEpisodes: async (id: string | number, animeTitle: string): Promise<MappedEpisode[]> => {
+  getAnimeEpisodes: async (id: string | number, animeTitle: string, isMovieHint: boolean = false): Promise<MappedEpisode[]> => {
     try {
       const clean = animeTitle.trim().toLowerCase();
       const shortTitle = clean.split(/[:\-\(]/)[0].trim();
+      const cached = getCachedAnime(id);
+
+      const isMovie = isMovieHint ||
+        (cached && (cached.type === 'Película' || cached.contentType === 'peliculas' || Number(cached.totalEpisodes) === 1)) ||
+        /pel[ií]cula|deadpool/i.test(clean);
+
+      if (isMovie && !/colecci[oó]n|saga/i.test(clean)) {
+        return [
+          {
+            id: 1,
+            episode_number: 1,
+            season_number: 1,
+            title: animeTitle || 'Película Completa'
+          }
+        ];
+      }
 
       // First check Supabase scraped episodes for this anime
       let query = supabase
@@ -497,12 +555,12 @@ export const api = {
       }
 
       // Default episode generator (1 to total episodes or 12)
-      const count = 12;
+      const count = isMovie ? 1 : 12;
       return Array.from({ length: count }, (_, i) => ({
         id: i + 1,
         episode_number: i + 1,
         season_number: 1,
-        title: `Episodio ${i + 1}`
+        title: isMovie ? (animeTitle || 'Película Completa') : `Episodio ${i + 1}`
       }));
     } catch (e) {
       return [
@@ -515,28 +573,61 @@ export const api = {
   getEpisodeServers: async (
     animeTitle: string,
     episodeNum: number,
-    language: string = 'latino'
+    language: string = 'latino',
+    animeId: string | number | null = null
   ): Promise<MappedServer[]> => {
     try {
       const clean = animeTitle.trim().toLowerCase();
       const shortTitle = clean.split(/[:\-\(]/)[0].trim();
+      let matchedData: any[] = [];
 
-      let query = supabase
-        .from('anime_episodes')
-        .select('*')
-        .eq('episode_number', episodeNum)
-        .order('created_at', { ascending: false });
-
-      if (shortTitle && shortTitle !== clean) {
-        query = query.or(`search_title.ilike.%${clean}%,search_title.ilike.%${shortTitle}%`);
-      } else {
-        query = query.ilike('search_title', `%${clean}%`);
+      // 1. Prioridad: Buscar por anime_tmdb_id si está provisto
+      if (animeId) {
+        const idStr = String(animeId).trim();
+        const { data: byId } = await supabase
+          .from('anime_episodes')
+          .select('*')
+          .eq('anime_tmdb_id', idStr)
+          .order('created_at', { ascending: false });
+        if (byId && byId.length > 0) {
+          matchedData = byId;
+        }
       }
 
-      const { data, error } = await query;
+      // 2. Prioridad: Buscar por episode_name
+      if (matchedData.length === 0 && clean) {
+        const { data: byEpName } = await supabase
+          .from('anime_episodes')
+          .select('*')
+          .ilike('episode_name', `%${clean}%`)
+          .order('created_at', { ascending: false });
+        if (byEpName && byEpName.length > 0) {
+          matchedData = byEpName;
+        }
+      }
 
-      if (data && data.length > 0) {
-        const servers: MappedServer[] = data.map((item: any) => ({
+      // 3. Prioridad: Buscar por search_title clásico
+      if (matchedData.length === 0 && clean) {
+        let query = supabase
+          .from('anime_episodes')
+          .select('*')
+          .eq('episode_number', episodeNum)
+          .order('created_at', { ascending: false });
+
+        if (shortTitle && shortTitle !== clean) {
+          query = query.or(`search_title.ilike.%${clean}%,search_title.ilike.%${shortTitle}%`);
+        } else {
+          query = query.ilike('search_title', `%${clean}%`);
+        }
+
+        const { data, error } = await query;
+        if (data && data.length > 0) {
+          matchedData = data;
+        }
+      }
+
+      if (matchedData.length > 0) {
+        const servers: MappedServer[] = matchedData.map((item: any) => ({
           id: item.id,
           name: item.server_name || 'Servidor Oficial',
           description: `Servidor (${(item.language || 'Sub').toUpperCase()})`,

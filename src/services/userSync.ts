@@ -64,8 +64,16 @@ export const syncService = {
   },
 
   // Save a single key-value pair to user_sync
-  saveUserKey: async (userId: string, key: string, value: any) => {
-    if (!userId) return;
+  saveUserKey: async (userId?: string | null, key?: string, value?: any) => {
+    if (!key) return;
+    let targetUserId = userId;
+    if (!targetUserId) {
+      try {
+        const { data: { session } } = await supabase.auth.getSession();
+        targetUserId = session?.user?.id;
+      } catch {}
+    }
+    if (!targetUserId) return;
     try {
       const serialized = value; // Supabase JSONB maneja objetos nativamente
       const now = new Date().toISOString();
@@ -73,7 +81,7 @@ export const syncService = {
         .from('user_sync')
         .upsert(
           {
-            user_id: userId,
+            user_id: targetUserId,
             key: key,
             value: serialized,
             updated_at: now

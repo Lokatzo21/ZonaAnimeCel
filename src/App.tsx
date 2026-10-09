@@ -1714,26 +1714,69 @@ export default function App() {
     showToast('Recomendación restaurada');
   };
 
-  // Server Sorting Priority (MP4: ZONAAPS, CINEBEL first!)
+  // Server Sorting Priority Oficial Actualizado
   const sortServers = (srvList: MappedServer[]): MappedServer[] => {
-    const getPriority = (name: string): number => {
-      const n = name.toUpperCase();
-      if (n.includes('ZONAAPS')) return 1;
-      if (n.includes('CINEBEL')) return 2;
-      if (n.includes('MULTI-AUDIO') || n.includes('MULTI - AUDIO')) return 3;
-      if (n.includes('ARCHIVE')) return 4;
-      if (n.includes('EARNVIDS')) return 5;
-      if (n.includes('VIMEO')) return 6;
-      if (n.includes('GOODSTREAM')) return 7;
-      if (n.includes('STREAMWISH')) return 8;
-      if (n.includes('UQLOAD')) return 9;
-      if (n.includes('FILEMOON')) return 10;
-      if (n.includes('FILELIONS')) return 11;
-      if (n.includes('VOE')) return 12;
-      if (n.includes('VIDEOAPP')) return 13;
-      return 90;
-    };
-    return [...srvList].sort((a, b) => getPriority(a.name) - getPriority(b.name));
+    if (!Array.isArray(srvList)) return [];
+    return [...srvList].sort((a, b) => {
+      const aName = (a.name || '').toUpperCase();
+      const bName = (b.name || '').toUpperCase();
+
+      const isA_mp4 = a.url?.toLowerCase().includes('.mp4') || aName.includes('CINEBEL');
+      const isB_mp4 = b.url?.toLowerCase().includes('.mp4') || bName.includes('CINEBEL');
+
+      const getRank = (item: MappedServer, name: string): number => {
+        // 1. ZONAAPS (MP4 nativo AnimeZona)
+        if (name.includes('ZONAAPS')) return 1;
+        // 2. CINEBEL (MP4 nativo)
+        if (name.includes('CINEBEL')) return 2;
+        // 3. MULTI - AUDIO / MULTI-AUDIO Z (MP4 nativo)
+        if (name.includes('MULTI-AUDIO') || name.includes('MULTI - AUDIO')) return 3;
+        // 4. ARCHIVE (MP4 nativo)
+        if (name.includes('ARCHIVE')) return 4;
+
+        // MP4 nativos directos adicionales
+        if (item.url?.toLowerCase().includes('.mp4')) return 4.5;
+
+        // Servidores de streaming principales
+        // 5. EARNVIDS
+        if (name.includes('EARNVIDS')) return 5;
+        // 6. VIMEO
+        if (name.includes('VIMEO')) return 6;
+        // 7. GOODSTREAM
+        if (name.includes('GOODSTREAM')) return 7;
+        // 8. STREAMWISH
+        if (name.includes('STREAMWISH')) return 8;
+        // 9. UQLOAD
+        if (name.includes('UQLOAD')) return 9;
+        // 10. FILEMOON
+        if (name.includes('FILEMOON')) return 10;
+        // 11. FILELIONS
+        if (name.includes('FILELIONS')) return 11;
+        // 12. VOE
+        if (name.includes('VOE')) return 12;
+        // 13. VIDEOAPP (Al final de los servidores principales)
+        if (name.includes('VIDEOAPP')) return 13;
+
+        // Servidores de respaldo
+        if (name.includes('FASTREAM')) return 20;
+        if (name.includes('VIDARA')) return 21;
+        if (name.includes('GAMOVIDEO')) return 22;
+        if (name.includes('DOODSTREAM')) return 23;
+
+        return 90;
+      };
+
+      const rankA = getRank(a, aName);
+      const rankB = getRank(b, bName);
+
+      if (rankA !== rankB) return rankA - rankB;
+
+      // Desempate si uno es MP4 directo y el otro no
+      if (isA_mp4 && !isB_mp4) return -1;
+      if (!isA_mp4 && isB_mp4) return 1;
+
+      return aName.localeCompare(bName);
+    });
   };
 
   // Select Anime -> Opens Details Page
@@ -1785,10 +1828,25 @@ export default function App() {
     }
 
     try {
-      const rawSrvs = await api.getEpisodeServers(anime.title, ep.episode_number, selectedLanguage);
+      const rawSrvs = await api.getEpisodeServers(anime.title, ep.episode_number, selectedLanguage, anime.id);
       const sorted = sortServers(rawSrvs);
       setServers(sorted);
-      setActiveServer(sorted.length > 0 ? sorted[0] : null);
+
+      // Auto-seleccionar idioma preferido disponible (latino > sub > castellano)
+      const availableLangs = Array.from(
+        new Set(sorted.map((s) => (s.lang || 'latino').toLowerCase()).filter((l) => l !== 'none'))
+      );
+      let defLang: 'latino' | 'sub' | 'castellano' = 'latino';
+      if (availableLangs.includes('latino')) defLang = 'latino';
+      else if (availableLangs.includes('sub')) defLang = 'sub';
+      else if (availableLangs.includes('castellano')) defLang = 'castellano';
+      else if (availableLangs.length > 0) defLang = availableLangs[0] as any;
+      setSelectedLanguage(defLang);
+
+      const matchingServers = sorted.filter(
+        (s) => (s.lang || 'latino').toLowerCase() === defLang || s.lang === 'none'
+      );
+      setActiveServer(matchingServers.length > 0 ? matchingServers[0] : (sorted.length > 0 ? sorted[0] : null));
 
       // Deduplicate continue watching (1 card per anime) only if logged in
       if (isLoggedIn) {
@@ -2040,7 +2098,14 @@ export default function App() {
     return `${mins}m ${secs < 10 ? '0' : ''}${secs}s`;
   };
 
-  const availableLanguages = Array.from(new Set(servers.map((s) => s.lang || 'latino')));
+  const availableLanguages = Array.from(
+    new Set(servers.map((s) => (s.lang || 'latino').toLowerCase()).filter((l) => l !== 'none'))
+  );
+  const visibleServers = servers.filter((s) => {
+    const l = (s.lang || 'latino').toLowerCase();
+    return l === selectedLanguage || l === 'none';
+  });
+  const displayServers = visibleServers.length > 0 ? visibleServers : servers;
   const filteredTrending = trendingAnimes.filter((a) => !hiddenRecommendations.includes(String(a.id)));
   const filteredCatalog = catalogAnimes.filter((a) => !hiddenRecommendations.includes(String(a.id)));
   const carouselAnimes = filteredTrending.slice(0, 5);
@@ -2257,7 +2322,11 @@ export default function App() {
                   <div className="flex items-center gap-2">
                     {availableLanguages.includes('latino') && (
                       <button
-                        onClick={() => setSelectedLanguage('latino')}
+                        onClick={() => {
+                          setSelectedLanguage('latino');
+                          const match = servers.filter((s) => (s.lang || 'latino').toLowerCase() === 'latino' || s.lang === 'none');
+                          if (match.length > 0) setActiveServer(match[0]);
+                        }}
                         className={`px-3 py-1 rounded-full text-xs font-bold transition ${
                           selectedLanguage === 'latino'
                             ? 'bg-[#7c3aed] text-white shadow-md'
@@ -2269,7 +2338,11 @@ export default function App() {
                     )}
                     {availableLanguages.includes('sub') && (
                       <button
-                        onClick={() => setSelectedLanguage('sub')}
+                        onClick={() => {
+                          setSelectedLanguage('sub');
+                          const match = servers.filter((s) => (s.lang || 'latino').toLowerCase() === 'sub' || s.lang === 'none');
+                          if (match.length > 0) setActiveServer(match[0]);
+                        }}
                         className={`px-3 py-1 rounded-full text-xs font-bold transition ${
                           selectedLanguage === 'sub'
                             ? 'bg-[#7c3aed] text-white shadow-md'
@@ -2281,7 +2354,11 @@ export default function App() {
                     )}
                     {availableLanguages.includes('castellano') && (
                       <button
-                        onClick={() => setSelectedLanguage('castellano')}
+                        onClick={() => {
+                          setSelectedLanguage('castellano');
+                          const match = servers.filter((s) => (s.lang || 'latino').toLowerCase() === 'castellano' || s.lang === 'none');
+                          if (match.length > 0) setActiveServer(match[0]);
+                        }}
                         className={`px-3 py-1 rounded-full text-xs font-bold transition ${
                           selectedLanguage === 'castellano'
                             ? 'bg-[#7c3aed] text-white shadow-md'
@@ -2298,8 +2375,8 @@ export default function App() {
                 <div className="flex items-center gap-2 text-xs">
                   <span className="text-slate-400 font-semibold w-16 shrink-0">Servidor:</span>
                   <div className="flex items-center gap-2 overflow-x-auto no-scrollbar scroll-smooth flex-1 py-1">
-                    {servers.length > 0 ? (
-                      servers.map((srv, idx) => (
+                    {displayServers.length > 0 ? (
+                      displayServers.map((srv, idx) => (
                         <button
                           key={idx}
                           onClick={() => {
@@ -2308,10 +2385,14 @@ export default function App() {
                           }}
                           className={`px-4 py-2 rounded-full text-xs font-bold flex items-center gap-1.5 whitespace-nowrap shrink-0 transition ${
                             activeServer?.url === srv.url
-                              ? 'bg-[#7c3aed] text-white font-extrabold shadow-lg shadow-purple-950/60'
+                              ? 'bg-[#7c3aed] text-white font-extrabold shadow-lg shadow-purple-950/60 ring-1 ring-purple-400/50'
                               : 'bg-[#181f2c] text-slate-300 border border-slate-700/60 hover:bg-[#20293a]'
                           }`}
                         >
+                          <span
+                            className="w-2 h-2 rounded-full shrink-0"
+                            style={{ backgroundColor: srv.color || '#a855f7' }}
+                          />
                           <Play className="w-3.5 h-3.5 fill-current" />
                           <span>{srv.name}</span>
                         </button>

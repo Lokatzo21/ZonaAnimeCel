@@ -694,13 +694,21 @@ export const api = {
       // 1. Prioridad: Buscar por anime_tmdb_id si está provisto
       if (animeId) {
         const idStr = String(animeId).trim();
-        const { data: byId } = await supabase
-          .from('anime_episodes')
-          .select('*')
-          .eq('anime_tmdb_id', idStr)
-          .order('created_at', { ascending: false });
+        let q = supabase.from('anime_episodes').select('*').eq('anime_tmdb_id', idStr);
+        if (!idStr.startsWith('custom-')) {
+          q = q.eq('episode_number', episodeNum);
+        }
+        const { data: byId } = await q.order('created_at', { ascending: false });
         if (byId && byId.length > 0) {
           matchedData = byId;
+        } else if (!idStr.startsWith('custom-')) {
+          // Si no encontró por episode_number estricto, buscar por anime_tmdb_id y filtrar
+          const { data: anyById } = await supabase.from('anime_episodes').select('*').eq('anime_tmdb_id', idStr);
+          if (anyById && anyById.length > 0) {
+            const epMatches = anyById.filter((e: any) => Number(e.episode_number) === Number(episodeNum));
+            if (epMatches.length > 0) matchedData = epMatches;
+            else if (Number(episodeNum) === 1) matchedData = anyById;
+          }
         }
       }
 
@@ -742,13 +750,33 @@ export const api = {
           name: item.server_name || 'Servidor Oficial',
           description: `Servidor (${(item.language || 'Sub').toUpperCase()})`,
           url: item.video_url,
-          color: item.server_name?.includes('FILEMOON')
-            ? '#3b82f6'
+          color: item.server_name?.includes('ZONAAPS')
+            ? '#ec4899'
+            : item.server_name?.includes('CINEBEL')
+            ? '#e11d48'
+            : item.server_name?.includes('MULTI')
+            ? '#f97316'
+            : item.server_name?.includes('ARCHIVE')
+            ? '#eab308'
             : item.server_name?.includes('EARNVIDS')
             ? '#10b981'
+            : item.server_name?.includes('VIMEO')
+            ? '#06b6d4'
+            : item.server_name?.includes('GOODSTREAM')
+            ? '#0ea5e9'
             : item.server_name?.includes('STREAMWISH')
             ? '#8b5cf6'
-            : '#e11d48',
+            : item.server_name?.includes('UQLOAD')
+            ? '#6366f1'
+            : item.server_name?.includes('FILEMOON')
+            ? '#3b82f6'
+            : item.server_name?.includes('FILELIONS')
+            ? '#14b8a6'
+            : item.server_name?.includes('VOE')
+            ? '#a855f7'
+            : item.server_name?.includes('VIDEOAPP')
+            ? '#f43f5e'
+            : '#64748b',
           icon: 'S',
           lang: item.language || 'latino',
           skip_start: item.skip_start,

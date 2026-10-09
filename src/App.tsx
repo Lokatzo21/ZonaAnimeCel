@@ -595,9 +595,11 @@ export default function App() {
         await updateService.reloadApp();
       }, 700);
     } catch (err: any) {
+      console.error('[App] Error al instalar actualización:', err);
       setIsInstallingUpdate(false);
       setUpdateDownloadProgress(null);
-      showToast('❌ Error al instalar la actualización');
+      const msg = err?.message || err?.toString() || 'Error al instalar la actualización';
+      showToast(`❌ ${msg.slice(0, 50)}`);
     }
   };
 

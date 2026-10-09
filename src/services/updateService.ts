@@ -5,6 +5,7 @@ export interface AppUpdateInfo {
   id: number;
   version: string;
   bundle_url: string;
+  checksum?: string;
   changelog?: string;
   created_at?: string;
 }
@@ -99,9 +100,27 @@ class UpdateService {
       }
 
       console.log(`[UpdateService] Descargando versión ${update.version} desde ${update.bundle_url}...`);
+
+      // Asegurarse de tener el checksum SHA-256 requerido por Capgo v8 en Android
+      let checksum = update.checksum;
+      if (!checksum) {
+        try {
+          console.log('[UpdateService] Checksum no provisto en update, calculando SHA-256...');
+          const resp = await fetch(update.bundle_url);
+          const buffer = await resp.arrayBuffer();
+          const hashBuffer = await crypto.subtle.digest('SHA-256', buffer);
+          const hashArray = Array.from(new Uint8Array(hashBuffer));
+          checksum = hashArray.map((b) => b.toString(16).padStart(2, '0')).join('');
+          console.log('[UpdateService] Checksum calculado con éxito:', checksum);
+        } catch (e) {
+          console.warn('[UpdateService] No se pudo calcular hash del zip:', e);
+        }
+      }
+
       const downloaded = await CapacitorUpdater.download({
         url: update.bundle_url,
-        version: update.version
+        version: update.version,
+        checksum: checksum
       });
 
       if (progressListener) {

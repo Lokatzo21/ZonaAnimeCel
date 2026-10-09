@@ -76,6 +76,9 @@ async function main() {
   // 4. Subir a Supabase Storage (bucket app-updates)
   console.log('\n[3/4] ☁️ Subiendo actualización a Supabase Storage...');
   const fileBuffer = fs.readFileSync(zipPath);
+  const crypto = await import('crypto');
+  const checksum = crypto.createHash('sha256').update(fileBuffer).digest('hex');
+  console.log(`🔑 SHA-256 Checksum verificado: ${checksum}`);
   const storagePath = `bundles/dist-v${version}.zip`;
 
   const { data: uploadData, error: uploadErr } = await supabase.storage
@@ -100,6 +103,7 @@ async function main() {
     .upsert({
       version: version,
       bundle_url: publicUrl,
+      checksum: checksum,
       changelog: changelog,
       is_active: true
     }, { onConflict: 'version' });

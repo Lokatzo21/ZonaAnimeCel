@@ -53,16 +53,16 @@ async function main() {
   console.log('\n[1/4] 🔨 Compilando la aplicación (vite build)...');
   execSync('npm run build', { stdio: 'inherit' });
 
-  // 3. Comprimir carpeta dist
-  console.log('\n[2/4] 🗜️ Comprimiendo paquete dist en ZIP...');
+  // 3. Comprimir carpeta dist usando AdmZip (asegura rutas POSIX '/' 100% compatibles con Android)
+  console.log('\n[2/4] 🗜️ Comprimiendo paquete dist en ZIP con rutas POSIX estándar...');
   if (fs.existsSync(zipPath)) {
     fs.unlinkSync(zipPath);
   }
 
-  // Usar PowerShell Compress-Archive
-  execSync(`powershell -Command "Compress-Archive -Path '${distDir}\\*' -DestinationPath '${zipPath}' -Force"`, {
-    stdio: 'inherit'
-  });
+  const { default: AdmZip } = await import('adm-zip');
+  const zip = new AdmZip();
+  zip.addLocalFolder(distDir);
+  zip.writeZip(zipPath);
 
   if (!fs.existsSync(zipPath)) {
     console.error('❌ Error: No se pudo crear el archivo ZIP.');

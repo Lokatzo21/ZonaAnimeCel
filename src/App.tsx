@@ -51,6 +51,7 @@ import { api, MappedAnime, MappedServer, MappedEpisode, TMDB_GENRES, cacheAnime,
 import { supabase } from './services/supabase';
 import { syncService } from './services/userSync';
 import { ORIGINAL_AVATARS, DEFAULT_AVATAR } from './config/avatars';
+import { updateService, AppUpdateInfo } from './services/updateService';
 import { App as CapApp } from '@capacitor/app';
 import {
   setAppOrientationPortrait,
@@ -261,6 +262,15 @@ export default function App() {
   const [showAuthRequiredModal, setShowAuthRequiredModal] = useState<string | null>(null);
   const [secretRestoreConfirmId, setSecretRestoreConfirmId] = useState<string | null>(null);
   const [secretRemoveAnimeTarget, setSecretRemoveAnimeTarget] = useState<MappedAnime | null>(null);
+  const [showRevertConfirm, setShowRevertConfirm] = useState(false);
+
+  // Live Update (OTA) state
+  const [appCurrentVersion, setAppCurrentVersion] = useState<string>('1.0.0');
+  const [isCheckingUpdate, setIsCheckingUpdate] = useState(false);
+  const [availableUpdate, setAvailableUpdate] = useState<AppUpdateInfo | null>(null);
+  const [updateCheckedStatus, setUpdateCheckedStatus] = useState<'idle' | 'up-to-date' | 'update-available' | 'error'>('idle');
+  const [updateDownloadProgress, setUpdateDownloadProgress] = useState<number | null>(null);
+  const [isInstallingUpdate, setIsInstallingUpdate] = useState(false);
 
   // User Authentication State
   const [isLoggedIn, setIsLoggedIn] = useState<boolean>(() => {
@@ -549,6 +559,61 @@ export default function App() {
     setTimeout(() => setToastMessage(null), 3500);
   };
 
+  // OTA Update Handlers
+  const handleCheckUpdates = async () => {
+    setIsCheckingUpdate(true);
+    try {
+      const res = await updateService.checkForUpdates();
+      setAppCurrentVersion(res.currentVersion);
+      if (res.hasUpdate && res.latestUpdate) {
+        setAvailableUpdate(res.latestUpdate);
+        setUpdateCheckedStatus('update-available');
+        showToast(`🚀 Nueva versión v${res.latestUpdate.version} disponible`);
+      } else {
+        setAvailableUpdate(null);
+        setUpdateCheckedStatus('up-to-date');
+        showToast('✨ Tu aplicación está al día');
+      }
+    } catch {
+      setUpdateCheckedStatus('error');
+      showToast('No se pudo verificar actualizaciones');
+    } finally {
+      setIsCheckingUpdate(false);
+    }
+  };
+
+  const handleApplyUpdate = async () => {
+    if (!availableUpdate) return;
+    setIsInstallingUpdate(true);
+    setUpdateDownloadProgress(0);
+    try {
+      await updateService.installUpdate(availableUpdate, (percent) => {
+        setUpdateDownloadProgress(percent);
+      });
+      showToast('🎉 ¡Actualización lista! Reiniciando...');
+      setTimeout(async () => {
+        await updateService.reloadApp();
+      }, 700);
+    } catch (err: any) {
+      setIsInstallingUpdate(false);
+      setUpdateDownloadProgress(null);
+      showToast('❌ Error al instalar la actualización');
+    }
+  };
+
+  const handleRevertVersion = async () => {
+    setIsInstallingUpdate(true);
+    try {
+      showToast('↩️ Restaurando versión base original...');
+      setTimeout(async () => {
+        await updateService.revertToBaseVersion();
+      }, 500);
+    } catch {
+      setIsInstallingUpdate(false);
+      showToast('❌ Error al revertir la versión');
+    }
+  };
+
   // Carga inicial de datos de catálogo y recomendaciones
   const loadInitialData = async () => {
     setLoading(true);
@@ -773,6 +838,16 @@ export default function App() {
   useEffect(() => {
     loadInitialData();
     refreshSecretCatalog();
+
+    // Notificar arranque exitoso a Capgo y verificar actualizaciones OTA en segundo plano
+    updateService.notifyAppReady();
+    updateService.getCurrentVersion().then(setAppCurrentVersion);
+    updateService.checkForUpdates().then((res) => {
+      if (res.hasUpdate && res.latestUpdate) {
+        setAvailableUpdate(res.latestUpdate);
+        setUpdateCheckedStatus('update-available');
+      }
+    });
 
     // Check existing Supabase session & setup real-time sync
     let syncChannel: any = null;
@@ -1646,11 +1721,16 @@ export default function App() {
       if (n.includes('ZONAAPS')) return 1;
       if (n.includes('CINEBEL')) return 2;
       if (n.includes('MULTI-AUDIO') || n.includes('MULTI - AUDIO')) return 3;
-      if (n.includes('EARNVIDS')) return 4;
-      if (n.includes('STREAMWISH')) return 5;
-      if (n.includes('UQLOAD')) return 6;
-      if (n.includes('FILEMOON')) return 7;
-      if (n.includes('ARCHIVE')) return 8;
+      if (n.includes('ARCHIVE')) return 4;
+      if (n.includes('EARNVIDS')) return 5;
+      if (n.includes('VIMEO')) return 6;
+      if (n.includes('GOODSTREAM')) return 7;
+      if (n.includes('STREAMWISH')) return 8;
+      if (n.includes('UQLOAD')) return 9;
+      if (n.includes('FILEMOON')) return 10;
+      if (n.includes('FILELIONS')) return 11;
+      if (n.includes('VOE')) return 12;
+      if (n.includes('VIDEOAPP')) return 13;
       return 90;
     };
     return [...srvList].sort((a, b) => getPriority(a.name) - getPriority(b.name));
@@ -3886,6 +3966,95 @@ export default function App() {
                           </button>
                         </div>
                       </div>
+
+                      {/* MÓDULO DE ACTUALIZACIONES OTA */}
+                      <div className="bg-[#0b0e14] border border-[#1b2230] rounded-2xl p-4 space-y-3.5">
+                        <div className="flex items-center justify-between">
+                          <div className="flex items-center gap-2">
+                            <Sparkles className="w-4 h-4 text-[#a855f7]" />
+                            <h4 className="text-sm font-bold text-white">Actualizaciones de la App</h4>
+                          </div>
+                          <span className="text-[11px] font-semibold bg-[#121620] border border-[#a855f7]/40 text-[#c084fc] px-2.5 py-0.5 rounded-full">
+                            v{appCurrentVersion}
+                          </span>
+                        </div>
+
+                        <p className="text-[11px] text-slate-400 leading-relaxed">
+                          Recibe mejoras de diseño, nuevos servidores y correcciones en vivo sin tener que descargar ni instalar archivos APK manualmente.
+                        </p>
+
+                        {/* Tarjeta de actualización disponible */}
+                        {availableUpdate && (
+                          <div className="bg-gradient-to-r from-[#170e28] to-[#121620] border border-[#a855f7]/50 rounded-xl p-3.5 space-y-2.5 animate-fade-in shadow-lg">
+                            <div className="flex items-center justify-between">
+                              <span className="text-xs font-bold text-white flex items-center gap-1.5">
+                                <span className="inline-block w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></span>
+                                ¡Nueva versión v{availableUpdate.version} disponible!
+                              </span>
+                              <span className="text-[10px] text-emerald-400 font-bold bg-emerald-950/60 border border-emerald-500/30 px-2 py-0.5 rounded-full">OTA</span>
+                            </div>
+
+                            {availableUpdate.changelog && (
+                              <div className="text-[11px] text-slate-300 bg-black/40 rounded-lg p-2.5 border border-white/5 space-y-0.5">
+                                <span className="font-semibold text-[#c084fc] block">Novedades:</span>
+                                <span>{availableUpdate.changelog}</span>
+                              </div>
+                            )}
+
+                            {isInstallingUpdate ? (
+                              <div className="space-y-1.5 pt-1">
+                                <div className="flex justify-between text-[11px] text-white font-semibold">
+                                  <span>Descargando e instalando...</span>
+                                  <span>{updateDownloadProgress !== null ? `${updateDownloadProgress}%` : ''}</span>
+                                </div>
+                                <div className="w-full bg-black/60 rounded-full h-2 overflow-hidden border border-white/10">
+                                  <div
+                                    className="bg-gradient-to-r from-[#7c3aed] to-[#a855f7] h-full transition-all duration-300"
+                                    style={{ width: `${updateDownloadProgress || 50}%` }}
+                                  ></div>
+                                </div>
+                              </div>
+                            ) : (
+                              <button
+                                onClick={handleApplyUpdate}
+                                className="w-full bg-gradient-to-r from-[#7c3aed] to-[#9333ea] hover:from-[#6d28d9] hover:to-[#7e22ce] text-white font-bold text-xs py-2.5 rounded-xl transition shadow-lg active:scale-98 flex items-center justify-center gap-2"
+                              >
+                                <Download className="w-4 h-4" />
+                                <span>Actualizar Ahora (2-3 MB)</span>
+                              </button>
+                            )}
+                          </div>
+                        )}
+
+                        {updateCheckedStatus === 'up-to-date' && !availableUpdate && (
+                          <div className="bg-[#121620] border border-emerald-500/30 rounded-xl p-3 flex items-center gap-2 text-xs text-emerald-400">
+                            <CheckCircle2 className="w-4 h-4 shrink-0" />
+                            <span>¡Tu aplicación está completamente al día! (v{appCurrentVersion})</span>
+                          </div>
+                        )}
+
+                        {/* Botones de acción */}
+                        <div className="flex flex-col sm:flex-row gap-2 pt-1">
+                          <button
+                            onClick={handleCheckUpdates}
+                            disabled={isCheckingUpdate || isInstallingUpdate}
+                            className="flex-1 bg-[#121620] hover:bg-[#1a202c] border border-[#2b3548] text-white font-semibold text-xs py-2.5 px-3 rounded-xl transition flex items-center justify-center gap-2 disabled:opacity-50"
+                          >
+                            <RefreshCw className={`w-3.5 h-3.5 ${isCheckingUpdate ? 'animate-spin text-[#a855f7]' : ''}`} />
+                            <span>{isCheckingUpdate ? 'Buscando...' : 'Buscar Actualización'}</span>
+                          </button>
+
+                          <button
+                            onClick={() => setShowRevertConfirm(true)}
+                            disabled={isInstallingUpdate}
+                            title="Restaura la aplicación a la versión base original del APK si la actual tiene fallos"
+                            className="bg-[#1a1520] hover:bg-[#261d30] border border-[#582b75]/40 text-[#d8b4fe] font-semibold text-xs py-2.5 px-3 rounded-xl transition flex items-center justify-center gap-1.5 disabled:opacity-50"
+                          >
+                            <Undo2 className="w-3.5 h-3.5" />
+                            <span>Revertir versión</span>
+                          </button>
+                        </div>
+                      </div>
                     </div>
                   )}
                 </div>
@@ -4225,6 +4394,47 @@ export default function App() {
           </div>
         )}
 
+        {/* MODAL: CONFIRMAR REVERSIÓN DE VERSIÓN */}
+        {showRevertConfirm && (
+          <div
+            onClick={(e) => {
+              if (e.target === e.currentTarget) setShowRevertConfirm(false);
+            }}
+            className="fixed inset-0 z-50 bg-black/90 backdrop-blur-md flex items-center justify-center p-4 animate-fade-in"
+          >
+            <div className="bg-[#121620] border border-[#a855f7]/40 rounded-3xl p-6 max-w-[340px] w-full space-y-4 shadow-2xl">
+              <div className="flex items-center gap-3 text-amber-400">
+                <AlertCircle className="w-6 h-6 shrink-0" />
+                <h3 className="text-base font-bold text-white">¿Restaurar versión anterior?</h3>
+              </div>
+
+              <p className="text-xs text-slate-300 leading-relaxed">
+                Si la versión actual presenta fallos o prefieres cómo funcionaba antes, la aplicación volverá a la versión base original y se reiniciará de inmediato.
+              </p>
+
+              <div className="flex items-center justify-end gap-2.5 pt-2">
+                <button
+                  type="button"
+                  onClick={() => setShowRevertConfirm(false)}
+                  className="text-xs font-semibold text-slate-400 hover:text-white px-3 py-2 transition"
+                >
+                  Cancelar
+                </button>
+                <button
+                  type="button"
+                  onClick={async () => {
+                    setShowRevertConfirm(false);
+                    await handleRevertVersion();
+                  }}
+                  className="bg-[#7c3aed] hover:bg-[#6d28d9] text-white px-4 py-2 rounded-xl text-xs font-bold transition shadow-lg"
+                >
+                  Restaurar y Reiniciar
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
+
         {/* Clean Mobile Bottom Navigation Bar: Ergonomic for Poco M6 Pro & Mobile Gesture Bars */}
         {!currentEpisode && (
           <nav className="border-t border-[#181f2c] bg-[#0b0e14]/95 backdrop-blur-md px-3 pt-2.5 pb-[max(0.6rem,env(safe-area-inset-bottom))] flex items-center justify-around fixed sm:absolute bottom-0 left-0 right-0 z-40 shadow-2xl">
@@ -4304,13 +4514,18 @@ export default function App() {
               }
             }}
             onDoubleClick={scrollToTop}
-            className={`flex flex-col items-center gap-1 transition ${
+            className={`flex flex-col items-center gap-1 transition relative ${
               activeTab === 'profile'
                 ? 'text-[#a855f7] font-bold'
                 : 'text-slate-400 hover:text-slate-200'
             }`}
           >
-            <User className="w-4 h-4" />
+            <div className="relative">
+              <User className="w-4 h-4" />
+              {availableUpdate && (
+                <span className="absolute -top-1 -right-1 w-2 h-2 rounded-full bg-emerald-400 ring-2 ring-black animate-pulse" />
+              )}
+            </div>
             <span className="text-[10px]">Perfil</span>
           </button>
         </nav>

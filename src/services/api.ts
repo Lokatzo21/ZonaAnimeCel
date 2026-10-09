@@ -26,7 +26,11 @@ export interface MappedAnime {
   status: string;
   isCustom: boolean;
   banner?: string;
+  backdrop?: string | null;
+  hasBackdrop?: boolean;
   contentType?: 'todos' | 'animes' | 'peliculas' | 'series';
+  is_secret?: boolean;
+  episode_names?: Record<string, string>;
 }
 
 export interface MappedServer {
@@ -135,6 +139,97 @@ const mapAnimeData = (item: any): MappedAnime => {
   return mapped;
 };
 
+const CUSTOM_MEDIA_ENRICHMENT: Record<string, { backdrop?: string; image?: string }> = {
+  'silo': {
+    backdrop: 'https://image.tmdb.org/t/p/original/uTWhbLc7Bj4qNSdW3ZvZKL8cOHv.jpg',
+    image: 'https://image.tmdb.org/t/p/w500/s4yRu8IRcMLbfoUsO4q9Yuci4F0.jpg'
+  },
+  'the super cube': {
+    backdrop: 'https://image.tmdb.org/t/p/original/89qSKhLrJOUhp6xgbqgSTpzblbA.jpg',
+    image: 'https://image.tmdb.org/t/p/w500/8nJV1CEh2eLK5fL3puEOE2tIEQI.jpg'
+  },
+  'super cube': {
+    backdrop: 'https://image.tmdb.org/t/p/original/89qSKhLrJOUhp6xgbqgSTpzblbA.jpg',
+    image: 'https://image.tmdb.org/t/p/w500/8nJV1CEh2eLK5fL3puEOE2tIEQI.jpg'
+  },
+  'lord of mysteries': {
+    backdrop: 'https://image.tmdb.org/t/p/original/gdvUUqWutEulHSB4JBoWWnbsLo6.jpg',
+    image: 'https://image.tmdb.org/t/p/w500/cR5KiAdVeZLG4nDUiCyqfvGzZ3f.jpg'
+  },
+  'deadpool & wolverine': {
+    backdrop: 'https://image.tmdb.org/t/p/original/by8z9Fe8y7p4jo2YlW2SZDnptyT.jpg',
+    image: 'https://image.tmdb.org/t/p/w500/6aY3OzCIdxoBMYdiH5s17rWFFFA.jpg'
+  },
+  'la oficina': {
+    backdrop: 'https://image.tmdb.org/t/p/original/mLyW3UTgi2lsMdtueYODcfAB9Ku.jpg',
+    image: 'https://image.tmdb.org/t/p/w500/mZMmfkTDiXgdKADBykhEFDp940V.jpg'
+  },
+  'boushoku no berserk': {
+    backdrop: 'https://image.tmdb.org/t/p/original/w6UrhLiXEMLwI4PFv2I2JEPhLRj.jpg',
+    image: 'https://image.tmdb.org/t/p/w500/p5rtHwieByHo1NdzOxB3vtVJJnA.jpg'
+  },
+  'spider-noir': {
+    backdrop: 'https://image.tmdb.org/t/p/original/reAZlLG6YMkBuxPT1XKuCH97TM1.jpg',
+    image: 'https://image.tmdb.org/t/p/w500/4Pec5a1At5UMeADkgcxwf6nLqau.jpg'
+  },
+  'el eternauta': {
+    backdrop: 'https://image.tmdb.org/t/p/original/yMjGzK7L4gwzpQNNtFKDeG79upo.jpg',
+    image: 'https://image.tmdb.org/t/p/w500/9Krv5NvKa5a3Q3b1l2B3rP9Bj8E.jpg'
+  },
+  'amigos y vecinos': {
+    backdrop: 'https://image.tmdb.org/t/p/original/e0mloha4ZQfLVZj0nsUtU7AoRs4.jpg',
+    image: 'https://image.tmdb.org/t/p/w500/ikaSVbTZyzsnjHK0ex64bJqQpgd.jpg'
+  },
+  'cazador de demonios': {
+    backdrop: 'https://image.tmdb.org/t/p/original/vfEtEzBIn0wwWM7ppzJCGEZUSu2.jpg',
+    image: 'https://image.tmdb.org/t/p/w500/6Ru3HStuwofNr6d20sKzAgmI2Yu.jpg'
+  },
+  'efectos colaterales': {
+    backdrop: 'https://image.tmdb.org/t/p/original/4drV6iluttgjZmU1Q0xDqjrBQ1.jpg',
+    image: 'https://image.tmdb.org/t/p/w500/rYsLEca2TwkABX5c04LuKZdjSTG.jpg'
+  },
+  'the pitt': {
+    backdrop: 'https://image.tmdb.org/t/p/original/z3BkMbCy5ajZPMyKEUwsPHuz2cV.jpg',
+    image: 'https://image.tmdb.org/t/p/w500/kvFSpESyBZMjaeOJDx7RS3P1jey.jpg'
+  },
+  'el nivel secreto': {
+    backdrop: 'https://image.tmdb.org/t/p/original/5AvZxT1BtPyP9ua1SjcUyWUMIiz.jpg',
+    image: 'https://image.tmdb.org/t/p/w500/y5jxT1jnydJL6sB3QkzCLu8e3HS.jpg'
+  },
+  'kaiju no. 8': {
+    backdrop: 'https://image.tmdb.org/t/p/original/htGeuCcNhlBe8GTx3izKOsd8frw.jpg',
+    image: 'https://image.tmdb.org/t/p/w500/A6JOsCdFFTxtbDnKAfE0iY6jOiE.jpg'
+  },
+  'el chacal': {
+    backdrop: 'https://image.tmdb.org/t/p/original/enVrO8TRkdT8dmYXTfI4sEjR5Kp.jpg',
+    image: 'https://image.tmdb.org/t/p/w500/faqXSU7eXffSxtyIX4EGyCITQpQ.jpg'
+  },
+  'piratas del caribe': {
+    backdrop: 'https://image.tmdb.org/t/p/original/uRNgkJSkNBFbbn9fPsEjDIy8Sh3.jpg',
+    image: 'https://image.tmdb.org/t/p/w500/8zHnkTGyAImBcI49a1xFJHUjbaK.jpg'
+  },
+  'arma mortal': {
+    backdrop: 'https://image.tmdb.org/t/p/original/yqZ5ACKeNJ30mylUEzvtWZu4pGU.jpg',
+    image: 'https://image.tmdb.org/t/p/w500/wP5ujjLHBWJFkwcExjwtGmhPagU.jpg'
+  },
+  'animales fantásticos': {
+    backdrop: 'https://image.tmdb.org/t/p/original/8Qsr8pvDL3s1jNZQ4HK1d1Xlvnh.jpg',
+    image: 'https://image.tmdb.org/t/p/w500/wduJFXlHQTIw1TBf6kTO3bHf2VN.jpg'
+  },
+  'así aprenderás': {
+    backdrop: 'https://image.tmdb.org/t/p/original/vyG93jhmPL7tBIhRtCLa5mdBKob.jpg',
+    image: 'https://image.tmdb.org/t/p/w500/lG83nWVT7cHl3nSxonaYhOjqyWH.jpg'
+  },
+  'el mentalista': {
+    backdrop: 'https://image.tmdb.org/t/p/original/rJFqKcmMSttdNP58l0dVzY2NcTA.jpg',
+    image: 'https://image.tmdb.org/t/p/w500/f3F6NA7A8TY8EjdIiGyYqoo38ug.jpg'
+  },
+  'harry potter colección': {
+    backdrop: 'https://image.tmdb.org/t/p/original/8r4r9Qzp393epFaEv0FiB8ENen3.jpg',
+    image: 'https://image.tmdb.org/t/p/original/pNeqCBGdEOhdaMTPlwdy1oJLG75.jpg'
+  }
+};
+
 const mapCustomAnime = (item: any): MappedAnime => {
   const isMovieOrSaga = (Number(item.total_episodes) === 1) || 
     /colecci[oó]n|pel[ií]cula|saga|harry potter|piratas del caribe|arma mortal|animales fant[aá]sticos|deadpool/i.test(item.title);
@@ -142,20 +237,35 @@ const mapCustomAnime = (item: any): MappedAnime => {
     (Array.isArray(item.genres) && item.genres.includes('Animación') && !isMovieOrSaga);
   const isSeries = !isMovieOrSaga && !isAnime;
 
+  const titleKey = (item.title || '').trim().toLowerCase();
+  const enrichment = CUSTOM_MEDIA_ENRICHMENT[titleKey] || 
+    Object.entries(CUSTOM_MEDIA_ENRICHMENT).find(([k]) => titleKey.includes(k))?.[1] || {};
+
+  const posterImage = (item.image && item.image.includes('image.tmdb.org'))
+    ? item.image
+    : (enrichment.image || item.image || 'https://images.unsplash.com/photo-1578632767115-351597cf2477?w=500&q=80');
+
+  const backdropUrl = item.banner || enrichment.backdrop || null;
+  const hasBackdrop = Boolean(backdropUrl);
+
   const mapped: MappedAnime = {
     id: item.id,
     title: item.title,
-    image: item.image || 'https://images.unsplash.com/photo-1578632767115-351597cf2477?w=500&q=80',
-    banner: item.image || 'https://images.unsplash.com/photo-1534447677768-be436bb09401?w=1200&q=80',
+    image: posterImage,
+    banner: backdropUrl || posterImage || 'https://images.unsplash.com/photo-1534447677768-be436bb09401?w=1200&q=80',
+    backdrop: backdropUrl,
+    hasBackdrop,
     score: item.score || '9.5',
-    totalEpisodes: item.total_episodes || 12,
-    episodes: item.total_episodes || 12,
+    totalEpisodes: (Number(item.total_episodes) === 1) ? 1 : (item.total_episodes || 12),
+    episodes: (Number(item.total_episodes) === 1) ? 1 : (item.total_episodes || 12),
     type: isMovieOrSaga ? 'Película / Saga' : (isSeries ? 'Serie' : 'Anime'),
     contentType: isMovieOrSaga ? 'peliculas' : (isAnime ? 'animes' : 'series'),
     description: item.description || 'Sinopsis agregada por la comunidad AnimeZona.',
     genres: item.genres || ['Anime'],
     status: item.status || 'En emisión',
-    isCustom: true
+    isCustom: true,
+    is_secret: item.is_secret || false,
+    episode_names: item.episode_names || {}
   };
   cacheAnime(mapped);
   return mapped;

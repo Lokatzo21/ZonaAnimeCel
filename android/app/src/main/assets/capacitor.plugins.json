@@ -6,5 +6,9 @@
 	{
 		"pkg": "@capacitor/screen-orientation",
 		"classpath": "com.capacitorjs.plugins.screenorientation.ScreenOrientationPlugin"
+	},
+	{
+		"pkg": "@capgo/capacitor-updater",
+		"classpath": "ee.forgr.capacitor_updater.CapacitorUpdaterPlugin"
 	}
 ]

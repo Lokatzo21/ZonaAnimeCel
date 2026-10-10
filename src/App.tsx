@@ -394,13 +394,24 @@ export default function App() {
     if (userId) syncService.saveUserKey(userId, 'videoProgress', vp);
   };
 
+  const LEGACY_ID_MAP: Record<string, string> = {
+    'custom-1791092665853': '226362',
+    'custom-1791530479852': '127529',
+    'custom-1776054217371': '228878'
+  };
+
   // Helper to normalize continue watching data and eliminate NaNm NaNs, resolving exact time and season from Web
   const normalizeContinueItem = (item: any, customVp?: Record<string, number>) => {
     if (!item) return null;
-    const animeId = item.animeId || item.id || item.anime_id || '';
-    if (!animeId || animeId === '[object Object]') return null;
-    const title = item.title || item.anime_title || item.name || 'Anime';
-    const image = item.image || item.poster || item.banner || 'https://images.unsplash.com/photo-1578632767115-351597cf2477?w=500&q=80';
+    const rawId = String(item.animeId || item.id || item.anime_id || '').trim();
+    if (!rawId || rawId === '[object Object]') return null;
+    const animeId = LEGACY_ID_MAP[rawId] || rawId;
+    let title = item.title || item.anime_title || item.name || 'Anime';
+    let image = item.image || item.poster || item.banner || 'https://images.unsplash.com/photo-1578632767115-351597cf2477?w=500&q=80';
+    if (String(animeId) === '278624' && title === 'AMAZON 3D') {
+      title = 'Lucky';
+      image = 'https://image.tmdb.org/t/p/w500/vZ3GfOoeha2xVCPec0jv2jf3yfC.jpg';
+    }
     
     // 1. Extraer temporada (compatibilidad web y regex en títulos/nombres)
     let seasonNum = Number(item.seasonNum || item.seasonNumber || item.season || item.season_number || 0);
@@ -450,7 +461,46 @@ export default function App() {
     };
   };
 
-  // Continue Watching: DEDUPLICATED BY ANIME ID (1 Card per Anime)
+  const dedupeContinueList = (list: any[]) => {
+    const seenIds = new Set<string>();
+    const seenTitles = new Set<string>();
+    const result: any[] = [];
+    for (const item of list) {
+      if (!item || !item.animeId) continue;
+      const idStr = String(item.animeId).trim();
+      const titleNorm = (item.title || '').trim().toLowerCase();
+      if (seenIds.has(idStr) || (titleNorm && seenTitles.has(titleNorm))) continue;
+      seenIds.add(idStr);
+      if (titleNorm) seenTitles.add(titleNorm);
+      result.push(item);
+    }
+    return result;
+  };
+
+  const dedupeWatchedList = (list: any[]): MappedAnime[] => {
+    const seenIds = new Set<string>();
+    const seenTitles = new Set<string>();
+    const result: MappedAnime[] = [];
+    for (const item of list) {
+      if (!item || (!item.id && !item.animeId)) continue;
+      const rawId = String(item.id || item.animeId).trim();
+      const idStr = LEGACY_ID_MAP[rawId] || rawId;
+      let title = item.title || 'Anime';
+      let image = item.image || '';
+      if (idStr === '278624' && title === 'AMAZON 3D') {
+        title = 'Lucky';
+        image = 'https://image.tmdb.org/t/p/w500/vZ3GfOoeha2xVCPec0jv2jf3yfC.jpg';
+      }
+      const titleNorm = title.trim().toLowerCase();
+      if (seenIds.has(idStr) || (titleNorm && seenTitles.has(titleNorm))) continue;
+      seenIds.add(idStr);
+      if (titleNorm) seenTitles.add(titleNorm);
+      result.push({ ...item, id: idStr, title, image });
+    }
+    return result;
+  };
+
+  // Continue Watching: DEDUPLICATED BY ANIME ID AND TITLE (1 Card per Anime)
   const [continueWatching, setContinueWatching] = useState<
     { animeId: string | number; title: string; image: string; seasonNum: number; episodeNum: number; episodeName: string; time: number; duration: number }[]
   >(() => {
@@ -459,7 +509,7 @@ export default function App() {
       if (!s) return [];
       const parsed = JSON.parse(s);
       if (!Array.isArray(parsed)) return [];
-      return parsed.map((item) => normalizeContinueItem(item)).filter(Boolean) as any[];
+      return dedupeContinueList(parsed.map((item) => normalizeContinueItem(item)).filter(Boolean));
     } catch {
       return [];
     }
@@ -469,7 +519,9 @@ export default function App() {
   const [watchedAnimesList, setWatchedAnimesList] = useState<MappedAnime[]>(() => {
     try {
       const s = localStorage.getItem('animezona_watched_animes') || localStorage.getItem('watchedAnimes');
-      return s ? JSON.parse(s) : [];
+      if (!s) return [];
+      const parsed = JSON.parse(s);
+      return Array.isArray(parsed) ? dedupeWatchedList(parsed) : [];
     } catch {
       return [];
     }
@@ -658,9 +710,11 @@ export default function App() {
 
     // 2. Continuar Viendo con normalización de tiempo, temporada y episodio
     if (cloudData.continueWatching && Array.isArray(cloudData.continueWatching)) {
-      const cleanCw = cloudData.continueWatching
-        .map((item: any) => normalizeContinueItem(item, vpMap))
-        .filter(Boolean) as any[];
+      const cleanCw = dedupeContinueList(
+        cloudData.continueWatching
+          .map((item: any) => normalizeContinueItem(item, vpMap))
+          .filter(Boolean)
+      );
       setContinueWatching(cleanCw);
       localStorage.setItem('animezona_continue', JSON.stringify(cleanCw));
       localStorage.setItem('continueWatching', JSON.stringify(cleanCw));
@@ -669,22 +723,28 @@ export default function App() {
     // 3. Favoritos y Objetos completos
     if (cloudData.favoriteAnimes && Array.isArray(cloudData.favoriteAnimes)) {
       const cleanFavs = cloudData.favoriteAnimes
-        .map((item: any) => (typeof item === 'object' && item !== null ? String(item.id || item.animeId || '') : String(item)))
+        .map((item: any) => {
+          const rawId = typeof item === 'object' && item !== null ? String(item.id || item.animeId || '').trim() : String(item).trim();
+          return LEGACY_ID_MAP[rawId] || rawId;
+        })
         .filter((id: string) => id && id !== '[object Object]');
       const objs = cloudData.favoriteAnimes.filter((item: any) => item && typeof item === 'object' && item.title && !String(item.title).startsWith('Anime #'));
       if (objs.length > 0) {
         setFavoriteAnimesData((prev) => {
           const map = new Map<string, MappedAnime>();
           [...prev, ...objs].forEach((a) => {
-            if (a && a.id) map.set(String(a.id), a);
+            if (a && a.id) {
+              const idStr = LEGACY_ID_MAP[String(a.id).trim()] || String(a.id).trim();
+              map.set(idStr, { ...a, id: idStr });
+            }
           });
           const arr = Array.from(map.values());
           localStorage.setItem('animezona_fav_objects', JSON.stringify(arr));
           return arr;
         });
       }
-      setFavorites(cleanFavs);
-      localStorage.setItem('animezona_favs', JSON.stringify(cleanFavs));
+      setFavorites(Array.from(new Set(cleanFavs)));
+      localStorage.setItem('animezona_favs', JSON.stringify(Array.from(new Set(cleanFavs))));
       localStorage.setItem('favoriteAnimes', JSON.stringify(cloudData.favoriteAnimes));
     }
 
@@ -696,9 +756,10 @@ export default function App() {
 
     // 5. Historial (Animes vistos)
     if (cloudData.watchedAnimes && Array.isArray(cloudData.watchedAnimes)) {
-      setWatchedAnimesList(cloudData.watchedAnimes);
-      localStorage.setItem('animezona_watched_animes', JSON.stringify(cloudData.watchedAnimes));
-      localStorage.setItem('watchedAnimes', JSON.stringify(cloudData.watchedAnimes));
+      const cleanWa = dedupeWatchedList(cloudData.watchedAnimes);
+      setWatchedAnimesList(cleanWa);
+      localStorage.setItem('animezona_watched_animes', JSON.stringify(cleanWa));
+      localStorage.setItem('watchedAnimes', JSON.stringify(cleanWa));
     }
 
     // 6. Episodios vistos
@@ -1411,9 +1472,10 @@ export default function App() {
   };
 
   const saveContinueWatching = (cw: typeof continueWatching) => {
-    setContinueWatching(cw);
-    localStorage.setItem('animezona_continue', JSON.stringify(cw));
-    const webCw = cw.map((item: any) => ({
+    const cleanCw = dedupeContinueList(cw);
+    setContinueWatching(cleanCw);
+    localStorage.setItem('animezona_continue', JSON.stringify(cleanCw));
+    const webCw = cleanCw.map((item: any) => ({
       ...item,
       id: item.animeId || item.id,
       animeId: item.animeId || item.id,
@@ -1433,10 +1495,11 @@ export default function App() {
   };
 
   const saveWatchedAnimes = (wa: MappedAnime[]) => {
-    setWatchedAnimesList(wa);
-    localStorage.setItem('animezona_watched_animes', JSON.stringify(wa));
-    localStorage.setItem('watchedAnimes', JSON.stringify(wa));
-    syncService.saveUserKey(userId, 'watchedAnimes', wa);
+    const cleanWa = dedupeWatchedList(wa);
+    setWatchedAnimesList(cleanWa);
+    localStorage.setItem('animezona_watched_animes', JSON.stringify(cleanWa));
+    localStorage.setItem('watchedAnimes', JSON.stringify(cleanWa));
+    syncService.saveUserKey(userId, 'watchedAnimes', cleanWa);
   };
 
   const saveWatchedEpisodes = (eps: string[]) => {

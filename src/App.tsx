@@ -1780,27 +1780,40 @@ export default function App() {
   };
 
   // Server Sorting Priority Oficial Actualizado
+  // Server Sorting Priority Oficial Actualizado (1. .mp4 -> 2. .m3u8 -> 3. Embeds)
   const sortServers = (srvList: MappedServer[]): MappedServer[] => {
     if (!Array.isArray(srvList)) return [];
     return [...srvList].sort((a, b) => {
       const aName = (a.name || '').toUpperCase();
       const bName = (b.name || '').toUpperCase();
 
+      // REGLA DE ORO DE PRIORIDAD:
+      // 1. MP4 directos SIEMPRE primero (#1)
       const isA_mp4 = a.url?.toLowerCase().includes('.mp4') || aName.includes('CINEBEL');
       const isB_mp4 = b.url?.toLowerCase().includes('.mp4') || bName.includes('CINEBEL');
+      if (isA_mp4 && !isB_mp4) return -1;
+      if (!isA_mp4 && isB_mp4) return 1;
+
+      // 2. Streams HLS adaptativos (.m3u8 / streamproxy) de segundo (#2)
+      const isA_m3u8 = a.url?.toLowerCase().includes('.m3u8') || a.url?.toLowerCase().includes('streamproxy') || a.url?.toLowerCase().includes('.p3x8') || aName.includes('ARCANDO');
+      const isB_m3u8 = b.url?.toLowerCase().includes('.m3u8') || b.url?.toLowerCase().includes('streamproxy') || b.url?.toLowerCase().includes('.p3x8') || bName.includes('ARCANDO');
+      if (isA_m3u8 && !isB_m3u8) return -1;
+      if (!isA_m3u8 && isB_m3u8) return 1;
 
       const getRank = (item: MappedServer, name: string): number => {
-        // 1. ZONAAPS (MP4 nativo AnimeZona)
+        // 0. RUMBLE / ARCHIVE (Máxima calidad)
+        if (name.includes('RUMBLE')) return 0.5;
+        if (name.includes('ARCHIVE')) return 0.8;
+        // 1. ZONAAPS (Nativo AnimeZona)
         if (name.includes('ZONAAPS')) return 1;
-        // 2. CINEBEL (MP4 nativo)
+        // 2. CINEBEL (Nativo)
         if (name.includes('CINEBEL')) return 2;
-        // 3. MULTI - AUDIO / MULTI-AUDIO Z (MP4 nativo)
+        // 3. MULTI - AUDIO / MULTI-AUDIO Z (Nativo)
         if (name.includes('MULTI-AUDIO') || name.includes('MULTI - AUDIO')) return 3;
-        // 4. ARCHIVE (MP4 nativo)
-        if (name.includes('ARCHIVE')) return 4;
 
-        // MP4 nativos directos adicionales
+        // Directos adicionales
         if (item.url?.toLowerCase().includes('.mp4')) return 4.5;
+        if (item.url?.toLowerCase().includes('.m3u8') || item.url?.toLowerCase().includes('streamproxy') || item.url?.toLowerCase().includes('.p3x8') || name.includes('ARCANDO')) return 4.8;
 
         // Servidores de streaming principales
         // 5. EARNVIDS
@@ -1835,10 +1848,6 @@ export default function App() {
       const rankB = getRank(b, bName);
 
       if (rankA !== rankB) return rankA - rankB;
-
-      // Desempate si uno es MP4 directo y el otro no
-      if (isA_mp4 && !isB_mp4) return -1;
-      if (!isA_mp4 && isB_mp4) return 1;
 
       return aName.localeCompare(bName);
     });
@@ -1882,8 +1891,13 @@ export default function App() {
       saveWatchedEpisodes(updated);
     }
 
-    // Check if there was a saved time in continueWatching
-    const saved = continueWatching.find((c) => String(c.animeId) === String(anime.id));
+    const isLive = Boolean(
+      (anime?.title && /24\/7|en vivo/i.test(anime.title)) ||
+      (ep?.title && /24\/7|en vivo/i.test(ep.title))
+    );
+
+    // Check if there was a saved time in continueWatching (skip for live streams)
+    const saved = !isLive ? continueWatching.find((c) => String(c.animeId) === String(anime.id)) : null;
     if (saved && saved.episodeNum === ep.episode_number && saved.time > 15 && !autoPlayDirect) {
       setSavedResumeTime(saved.time);
       setShowContinueOverlay(true);
@@ -1913,8 +1927,8 @@ export default function App() {
       );
       setActiveServer(matchingServers.length > 0 ? matchingServers[0] : (sorted.length > 0 ? sorted[0] : null));
 
-      // Deduplicate continue watching (1 card per anime) only if logged in
-      if (isLoggedIn) {
+      // Deduplicate continue watching (1 card per anime) only if logged in and not live stream
+      if (!isLive && isLoggedIn) {
         const newItem = {
           animeId: anime.id,
           title: anime.title,
@@ -1946,6 +1960,13 @@ export default function App() {
   // Video Time Update
   const handleTimeUpdate = () => {
     if (!videoRef.current || !selectedAnime || !currentEpisode || !isLoggedIn) return;
+    const isLive = Boolean(
+      (selectedAnime.title && /24\/7|en vivo/i.test(selectedAnime.title)) ||
+      (currentEpisode.title && /24\/7|en vivo/i.test(currentEpisode.title)) ||
+      (activeServer?.url && /streamproxy|\.p3x8|arcando/i.test(activeServer.url))
+    );
+    if (isLive) return;
+
     const current = Math.floor(videoRef.current.currentTime);
     const total = Math.floor(videoRef.current.duration || 1440);
     setCurrentVideoTime(current);
@@ -2489,7 +2510,11 @@ export default function App() {
                   </div>
                 ) : activeServer?.url ? (
                   <>
-                    {activeServer.url.toLowerCase().includes('.mp4') || activeServer.url.toLowerCase().includes('.m3u8') ? (
+                    {activeServer.url.toLowerCase().includes('.mp4') || 
+                     activeServer.url.toLowerCase().includes('.m3u8') || 
+                     activeServer.url.toLowerCase().includes('streamproxy') || 
+                     activeServer.url.toLowerCase().includes('.p3x8') || 
+                     (activeServer.name && /arcando/i.test(activeServer.name)) ? (
                       <video
                         ref={videoRef}
                         src={activeServer.url}

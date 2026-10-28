@@ -2618,7 +2618,8 @@ export default function App() {
                      activeServer.url.toLowerCase().includes('.m3u8') || 
                      activeServer.url.toLowerCase().includes('streamproxy') || 
                      activeServer.url.toLowerCase().includes('.p3x8') || 
-                     (activeServer.name && /arcando/i.test(activeServer.name)) ? (
+                     activeServer.url.toLowerCase().includes('mediafire') || 
+                     (activeServer.name && /arcando|mediafire/i.test(activeServer.name)) ? (
                       <video
                         ref={videoRef}
                         src={activeServer.url}

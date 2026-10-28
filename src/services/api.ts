@@ -6427,6 +6427,24 @@ export const api = {
           outro_start: item.outro_start
         }));
 
+        // Sincronización inteligente de tiempos:
+        // Si algún servidor ya tiene tiempos (ej. CINEBEL), pasárselos a los demás directos (RUMBLE, MEDIAFIRE, .mp4, .m3u8)
+        const commonSkipStart = servers.find((s: any) => s.skip_start != null)?.skip_start ?? null;
+        const commonSkipEnd = servers.find((s: any) => s.skip_end != null)?.skip_end ?? null;
+        const commonOutroStart = servers.find((s: any) => s.outro_start != null)?.outro_start ?? null;
+
+        if (commonSkipStart != null || commonOutroStart != null) {
+          servers.forEach((s: any) => {
+            const isDirect = (s.url && /mediafire|rumble|cinebel|arcando|\.mp4|\.m3u8/i.test(s.url)) ||
+                             (s.name && /cinebel|rumble|mediafire|arcando/i.test(s.name));
+            if (isDirect) {
+              if (s.skip_start == null) s.skip_start = commonSkipStart;
+              if (s.skip_end == null) s.skip_end = commonSkipEnd;
+              if (s.outro_start == null) s.outro_start = commonOutroStart;
+            }
+          });
+        }
+
         // Deduplicate URLs
         const seen = new Set<string>();
         return servers.filter((s) => {

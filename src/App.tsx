@@ -254,6 +254,13 @@ export default function App() {
   const [currentVideoTime, setCurrentVideoTime] = useState(0);
   const [videoDuration, setVideoDuration] = useState(0);
 
+  // Next Episode Countdown State (5s timer, synced with outro & end of video)
+  const [showNextEpisodePrompt, setShowNextEpisodePrompt] = useState(false);
+  const [countdownSeconds, setCountdownSeconds] = useState<number | null>(null);
+  const [cancelledCountdown, setCancelledCountdown] = useState(false);
+  const countdownIntervalRef = useRef<any>(null);
+  const autoNextTriggeredRef = useRef(false);
+
   // Modals & Prompts
   const [showCastModal, setShowCastModal] = useState(false);
   const [showAddToListModal, setShowAddToListModal] = useState(false);
@@ -1957,9 +1964,89 @@ export default function App() {
     }
   };
 
+  // Reset countdown on episode switch
+  useEffect(() => {
+    setShowNextEpisodePrompt(false);
+    setCountdownSeconds(null);
+    setCancelledCountdown(false);
+    autoNextTriggeredRef.current = false;
+    if (countdownIntervalRef.current) {
+      clearInterval(countdownIntervalRef.current);
+      countdownIntervalRef.current = null;
+    }
+  }, [selectedAnime?.id, currentEpisode?.episode_number]);
+
+  // Next Episode Action: Play directly and maintain fullscreen
+  const handleAdvanceNextEpisode = () => {
+    if (autoNextTriggeredRef.current) return;
+    autoNextTriggeredRef.current = true;
+    setShowNextEpisodePrompt(false);
+    setCountdownSeconds(null);
+    if (countdownIntervalRef.current) {
+      clearInterval(countdownIntervalRef.current);
+      countdownIntervalRef.current = null;
+    }
+
+    if (!selectedAnime || !currentEpisode) return;
+    const nextEp = episodesList.find((e) => e.episode_number === currentEpisode.episode_number + 1);
+    if (nextEp) {
+      playEpisode(selectedAnime, nextEp, true);
+      showToast(`Reproduciendo T${nextEp.season_number || 1}E${nextEp.episode_number}`);
+      if (isFullscreenPlayer) {
+        setTimeout(() => {
+          enterPlayerFullscreen();
+        }, 350);
+      }
+    }
+  };
+
+  const handleCancelCountdown = (e?: React.MouseEvent) => {
+    if (e && e.stopPropagation) e.stopPropagation();
+    setCancelledCountdown(true);
+    setShowNextEpisodePrompt(false);
+    setCountdownSeconds(null);
+    if (countdownIntervalRef.current) {
+      clearInterval(countdownIntervalRef.current);
+      countdownIntervalRef.current = null;
+    }
+  };
+
+  // Active 5-second countdown interval effect
+  useEffect(() => {
+    if (countdownSeconds === null || !showNextEpisodePrompt) {
+      if (countdownIntervalRef.current) {
+        clearInterval(countdownIntervalRef.current);
+        countdownIntervalRef.current = null;
+      }
+      return;
+    }
+
+    if (countdownIntervalRef.current) clearInterval(countdownIntervalRef.current);
+
+    countdownIntervalRef.current = setInterval(() => {
+      setCountdownSeconds((prev) => {
+        if (prev === null) return null;
+        if (prev <= 1) {
+          clearInterval(countdownIntervalRef.current);
+          countdownIntervalRef.current = null;
+          handleAdvanceNextEpisode();
+          return 0;
+        }
+        return prev - 1;
+      });
+    }, 1000);
+
+    return () => {
+      if (countdownIntervalRef.current) {
+        clearInterval(countdownIntervalRef.current);
+        countdownIntervalRef.current = null;
+      }
+    };
+  }, [countdownSeconds, showNextEpisodePrompt]);
+
   // Video Time Update
   const handleTimeUpdate = () => {
-    if (!videoRef.current || !selectedAnime || !currentEpisode || !isLoggedIn) return;
+    if (!videoRef.current || !selectedAnime || !currentEpisode) return;
     const isLive = Boolean(
       (selectedAnime.title && /24\/7|en vivo/i.test(selectedAnime.title)) ||
       (currentEpisode.title && /24\/7|en vivo/i.test(currentEpisode.title)) ||
@@ -1972,7 +2059,31 @@ export default function App() {
     setCurrentVideoTime(current);
     setVideoDuration(total);
 
-    if (current > 5 && current % 5 === 0) {
+    // Next Episode detection:
+    // 1. Official outro metadata: current >= activeServer.outro_start
+    // 2. OR natural end of episode / seeking near end: total > 15 and current >= total - 15
+    const hasNext = episodesList.some((e) => e.episode_number === currentEpisode.episode_number + 1);
+    const isOutroPoint = Boolean(activeServer?.outro_start && current >= activeServer.outro_start);
+    const isNearEnd = Boolean(total > 15 && current >= total - 15);
+    const shouldShowNext = hasNext && (isOutroPoint || isNearEnd) && !cancelledCountdown;
+
+    if (shouldShowNext) {
+      setShowNextEpisodePrompt(true);
+      if (countdownSeconds === null && !autoNextTriggeredRef.current) {
+        const remainingUntilEnd = Math.max(1, Math.ceil(total - current));
+        const initialCount = isNearEnd && remainingUntilEnd < 5 ? remainingUntilEnd : 5;
+        setCountdownSeconds(initialCount);
+      }
+    } else if (!isOutroPoint && !isNearEnd) {
+      setShowNextEpisodePrompt(false);
+      setCountdownSeconds(null);
+      if (countdownIntervalRef.current) {
+        clearInterval(countdownIntervalRef.current);
+        countdownIntervalRef.current = null;
+      }
+    }
+
+    if (isLoggedIn && current > 5 && current % 5 === 0) {
       const updated = continueWatching.map((item) => {
         if (String(item.animeId) === String(selectedAnime.id)) {
           return { ...item, time: current, duration: total };
@@ -1992,19 +2103,6 @@ export default function App() {
     if (!videoRef.current || !activeServer?.skip_end) return;
     videoRef.current.currentTime = activeServer.skip_end;
     showToast('Intro saltada');
-  };
-
-  // Next Episode Action: ONLY when user explicitly clicks "Ver ya", plays directly AND enters fullscreen!
-  const handleNextEpisodeVerYa = () => {
-    if (!selectedAnime || !currentEpisode) return;
-    const nextEp = episodesList.find((e) => e.episode_number === currentEpisode.episode_number + 1);
-    if (nextEp) {
-      playEpisode(selectedAnime, nextEp, true);
-      showToast(`Reproduciendo T${nextEp.season_number || 1}E${nextEp.episode_number}`);
-      setTimeout(() => {
-        enterPlayerFullscreen();
-      }, 400);
-    }
   };
 
   // Download MP4 Helper
@@ -2198,6 +2296,12 @@ export default function App() {
 
   const availableSeasons = Array.from(new Set(episodesList.map((e) => e.season_number || 1))).sort((a, b) => a - b);
   const currentSeasonEpisodes = episodesList.filter((e) => (e.season_number || 1) === activeSeason);
+
+  const hasNextEpisode = Boolean(
+    selectedAnime &&
+    currentEpisode &&
+    episodesList.some((e) => e.episode_number === currentEpisode.episode_number + 1)
+  );
 
   const isInsideIntro =
     activeServer?.skip_start != null &&
@@ -2523,6 +2627,11 @@ export default function App() {
                         playsInline
                         autoPlay={false}
                         onTimeUpdate={handleTimeUpdate}
+                        onEnded={() => {
+                          if (hasNextEpisode) {
+                            handleAdvanceNextEpisode();
+                          }
+                        }}
                         className="w-full h-full object-contain"
                       />
                     ) : (
@@ -2546,19 +2655,39 @@ export default function App() {
                       </button>
                     )}
 
-                    {/* BOTÓN SIGUIENTE EPISODIO CON PANTALLA COMPLETA + AUTOPLAY EN "VER YA" */}
-                    {isInsideOutro && (
-                      <div className="absolute top-4 right-4 z-30 bg-black/40 text-slate-300 border border-white/10 backdrop-blur-sm p-2 rounded-xl shadow-xl flex items-center gap-2.5 transition">
-                        <div className="text-left">
-                          <p className="text-[10px] text-slate-400">Siguiente Episodio</p>
-                          <p className="text-xs font-bold text-white">Ep. {currentEpisode.episode_number + 1}</p>
+                    {/* TARJETA TRANSLÚCIDA: CUENTA REGRESIVA 5S AL SIGUIENTE EPISODIO */}
+                    {showNextEpisodePrompt && hasNextEpisode && currentEpisode && (
+                      <div
+                        className="absolute bottom-14 right-3 z-40 flex items-center gap-2 px-3 py-1.5 rounded-xl border border-white/20 bg-slate-950/80 backdrop-blur-md shadow-2xl transition-all"
+                        onClick={(e) => e.stopPropagation()}
+                      >
+                        <div className="flex flex-col text-left">
+                          <span className="text-[10px] text-slate-300 font-medium whitespace-nowrap">
+                            {countdownSeconds !== null ? `Siguiente en ${countdownSeconds}s` : '¿Siguiente episodio?'}
+                          </span>
+                          <span className="text-xs font-bold text-[#a855f7] leading-tight whitespace-nowrap">
+                            Ep. {currentEpisode.episode_number + 1}
+                          </span>
                         </div>
+
                         <button
-                          onClick={handleNextEpisodeVerYa}
-                          className="bg-slate-800/60 hover:bg-slate-700/80 text-slate-200 border border-slate-600/30 px-2.5 py-1 rounded-lg text-xs font-semibold flex items-center gap-1 transition"
+                          type="button"
+                          onClick={handleAdvanceNextEpisode}
+                          className="bg-[#7c3aed] hover:bg-[#6d28d9] text-white px-2.5 py-1 rounded-lg text-xs font-bold flex items-center gap-1 shadow-md transition active:scale-95 whitespace-nowrap"
+                          title="Reproducir siguiente ahora"
                         >
-                          <Play className="w-3.5 h-3.5 fill-white text-white" />
+                          <Play className="w-3 h-3 fill-current" />
                           <span>Ver ya</span>
+                        </button>
+
+                        <button
+                          type="button"
+                          onClick={handleCancelCountdown}
+                          className="w-5 h-5 rounded-full bg-white/10 hover:bg-white/20 text-slate-300 flex items-center justify-center transition active:scale-90 shrink-0"
+                          title="Cancelar cuenta regresiva"
+                          aria-label="Cancelar cuenta regresiva"
+                        >
+                          <X className="w-3 h-3" />
                         </button>
                       </div>
                     )}

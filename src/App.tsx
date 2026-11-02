@@ -1802,8 +1802,8 @@ export default function App() {
       if (!isA_mp4 && isB_mp4) return 1;
 
       // 2. Streams HLS adaptativos (.m3u8 / streamproxy) de segundo (#2)
-      const isA_m3u8 = a.url?.toLowerCase().includes('.m3u8') || a.url?.toLowerCase().includes('streamproxy') || a.url?.toLowerCase().includes('.p3x8') || aName.includes('ARCANDO');
-      const isB_m3u8 = b.url?.toLowerCase().includes('.m3u8') || b.url?.toLowerCase().includes('streamproxy') || b.url?.toLowerCase().includes('.p3x8') || bName.includes('ARCANDO');
+      const isA_m3u8 = a.url?.toLowerCase().includes('.m3u8') || a.url?.toLowerCase().includes('streamproxy') || a.url?.toLowerCase().includes('.p3x8') || aName.includes('ARCANDO') || (a.url?.toLowerCase().includes('/api/okru') && !a.url?.toLowerCase().includes('&q='));
+      const isB_m3u8 = b.url?.toLowerCase().includes('.m3u8') || b.url?.toLowerCase().includes('streamproxy') || b.url?.toLowerCase().includes('.p3x8') || bName.includes('ARCANDO') || (b.url?.toLowerCase().includes('/api/okru') && !b.url?.toLowerCase().includes('&q='));
       if (isA_m3u8 && !isB_m3u8) return -1;
       if (!isA_m3u8 && isB_m3u8) return 1;
 
@@ -2619,6 +2619,8 @@ export default function App() {
                      activeServer.url.toLowerCase().includes('streamproxy') || 
                      activeServer.url.toLowerCase().includes('.p3x8') || 
                      activeServer.url.toLowerCase().includes('mediafire') || 
+                     activeServer.url.toLowerCase().includes('/api/okru') || 
+                     activeServer.server_name === 'OKRU' ||
                      (activeServer.name && /arcando|mediafire/i.test(activeServer.name)) ? (
                       <video
                         ref={videoRef}

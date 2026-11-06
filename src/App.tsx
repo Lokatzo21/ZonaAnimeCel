@@ -53,6 +53,7 @@ import { syncService } from './services/userSync';
 import { ORIGINAL_AVATARS, DEFAULT_AVATAR } from './config/avatars';
 import { updateService, AppUpdateInfo } from './services/updateService';
 import { App as CapApp } from '@capacitor/app';
+import { Capacitor, CapacitorHttp } from '@capacitor/core';
 import {
   setAppOrientationPortrait,
   setAppOrientationLandscape,
@@ -245,7 +246,108 @@ export default function App() {
   const [currentEpisode, setCurrentEpisode] = useState<MappedEpisode | null>(null);
   const [servers, setServers] = useState<MappedServer[]>([]);
   const [activeServer, setActiveServer] = useState<MappedServer | null>(null);
+  const [resolvedVideoUrl, setResolvedVideoUrl] = useState<string>('');
   const [loadingServers, setLoadingServers] = useState(false);
+
+  useEffect(() => {
+    if (!activeServer?.url) {
+      setResolvedVideoUrl('');
+      return;
+    }
+    let isCancelled = false;
+    const resolve = async (rawUrl: string) => {
+      let target = rawUrl;
+      // Direct Mediafire
+      if (/mediafire/i.test(target)) {
+        let pageUrl = target;
+        if (target.includes('?url=')) {
+          const m = target.match(/[?&]url=([^&]+)/);
+          if (m) pageUrl = decodeURIComponent(m[1]);
+        }
+        pageUrl = pageUrl.replace(/[?&]\.mp4$/i, '').trim();
+        try {
+          let html = '';
+          if (Capacitor.isNativePlatform()) {
+            const resp = await CapacitorHttp.get({
+              url: pageUrl,
+              headers: { 'User-Agent': 'Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36' }
+            });
+            html = typeof resp.data === 'string' ? resp.data : JSON.stringify(resp.data);
+          } else {
+            const res = await fetch(pageUrl, {
+              headers: { 'User-Agent': 'Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36' }
+            });
+            if (res.ok) html = await res.text();
+          }
+
+          if (html) {
+            const match = html.match(/aria-label=["']Download file["']\s+href=["']([^"']+)["']/i) ||
+                          html.match(/id=["']downloadButton["']\s+href=["']([^"']+)["']/i) ||
+                          html.match(/href=["'](https?:\/\/download[^"']+)["'][^>]*id=["']downloadButton["']/i) ||
+                          html.match(/https?:\/\/download\d+\.mediafire\.com\/[^\s"']+/i);
+            if (match) {
+              const direct = match[1] || match[0];
+              return direct.includes('?') ? `${direct}&.mp4` : `${direct}?.mp4`;
+            }
+          }
+        } catch (e) {
+          console.warn('[Direct MF Mobile] Error:', e);
+        }
+        return '';
+      }
+      // Direct OKRU
+      if (/ok\.ru|okru/i.test(target)) {
+        let okId = null;
+        const mId = target.match(/(?:ok\.ru\/video\/|\/api\/okru\?id=)([0-9]+)/i);
+        if (mId) okId = mId[1];
+        if (okId) {
+          try {
+            let html = '';
+            if (Capacitor.isNativePlatform()) {
+              const resp = await CapacitorHttp.get({
+                url: `https://ok.ru/video/${okId}`,
+                headers: { 'User-Agent': 'Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36' }
+              });
+              html = typeof resp.data === 'string' ? resp.data : JSON.stringify(resp.data);
+            } else {
+              const res = await fetch(`https://ok.ru/video/${okId}`, {
+                headers: { 'User-Agent': 'Mozilla/5.0 (Linux; Android 13) AppleWebKit/537.36' }
+              });
+              if (res.ok) html = await res.text();
+            }
+
+            if (html) {
+              const match = html.match(/data-options=["']({[^"']+})["']/i) ||
+                            html.match(/data-options=["'](&quot;[\s\S]*?&quot;)["']/i);
+              if (match) {
+                const raw = match[1].replace(/&quot;/g, '"').replace(/&amp;/g, '&');
+                const json = JSON.parse(raw);
+                const meta = typeof json.flashvars?.metadata === 'string'
+                  ? JSON.parse(json.flashvars.metadata)
+                  : json.flashvars?.metadata;
+                if (meta?.videos && meta.videos.length > 0) {
+                  const best = meta.videos.find((x: any) => x.name === 'quad') ||
+                               meta.videos.find((x: any) => x.name === 'full') ||
+                               meta.videos.find((x: any) => x.name === 'hd') ||
+                               meta.videos[0];
+                  if (best?.url) return best.url;
+                }
+              }
+            }
+          } catch (e) {
+            console.warn('[Direct OKRU Mobile] Error:', e);
+          }
+        }
+      }
+      return target;
+    };
+
+    resolve(activeServer.url).then(resUrl => {
+      if (!isCancelled) setResolvedVideoUrl(resUrl);
+    });
+
+    return () => { isCancelled = true; };
+  }, [activeServer?.url]);
   const [selectedLanguage, setSelectedLanguage] = useState<'latino' | 'sub' | 'castellano'>('latino');
   const [showNativeControls, setShowNativeControls] = useState(true);
   const [cinemaLightOff, setCinemaLightOff] = useState(false);
@@ -2502,7 +2604,9 @@ export default function App() {
               </button>
 
               <h1 className="text-xl md:text-2xl font-extrabold text-white leading-tight">
-                T{currentEpisode.season_number || 1}E{currentEpisode.episode_number} - {currentEpisode.title}
+                {selectedAnime.contentType === 'peliculas' || selectedAnime.is_movie || selectedAnime.type?.includes('Película')
+                  ? selectedAnime.title
+                  : `T${currentEpisode.season_number || 1}E${currentEpisode.episode_number} - ${currentEpisode.title}`}
               </h1>
 
               {/* Server & Language Control Container */}
@@ -2619,24 +2723,45 @@ export default function App() {
                      activeServer.url.toLowerCase().includes('streamproxy') || 
                      activeServer.url.toLowerCase().includes('.p3x8') || 
                      activeServer.url.toLowerCase().includes('mediafire') || 
+                     activeServer.url.toLowerCase().includes('ok.ru') || 
                      activeServer.url.toLowerCase().includes('/api/okru') || 
                      activeServer.server_name === 'OKRU' ||
-                     (activeServer.name && /arcando|mediafire/i.test(activeServer.name)) ? (
-                      <video
-                        ref={videoRef}
-                        src={activeServer.url}
-                        poster={selectedAnime.banner || selectedAnime.image}
-                        controls={showNativeControls}
-                        playsInline
-                        autoPlay={false}
-                        onTimeUpdate={handleTimeUpdate}
-                        onEnded={() => {
-                          if (hasNextEpisode) {
-                            handleAdvanceNextEpisode();
-                          }
-                        }}
-                        className="w-full h-full object-contain"
-                      />
+                     (activeServer.name && /arcando|mediafire|okru/i.test(activeServer.name)) ? (
+                      ((/mediafire|ok\.ru|okru/i.test(activeServer.url) || activeServer.server_name === 'OKRU') && !resolvedVideoUrl) ? (
+                        <div className="flex flex-col items-center justify-center h-full text-slate-300 p-6 text-center gap-3">
+                          <RefreshCw className="w-8 h-8 animate-spin text-[#ff3d00]" />
+                          <p className="text-sm font-semibold">Generando stream directo...</p>
+                          <span className="text-xs text-slate-400">Extrayendo video en alta velocidad</span>
+                        </div>
+                      ) : (
+                        <video
+                          ref={videoRef}
+                          src={resolvedVideoUrl || activeServer.url}
+                          poster={selectedAnime.banner || selectedAnime.image}
+                          controls={showNativeControls}
+                          playsInline
+                          autoPlay={false}
+                          onTimeUpdate={handleTimeUpdate}
+                          onEnded={() => {
+                            if (hasNextEpisode) {
+                              handleAdvanceNextEpisode();
+                            }
+                          }}
+                          className="w-full h-full object-contain"
+                        />
+                      )
+                    ) : /mediafire/i.test(activeServer.url) ? (
+                      <div className="flex flex-col items-center justify-center h-full text-slate-300 p-6 text-center gap-3">
+                        <p className="text-sm font-medium">Mediafire no permite incrustación dentro de la app (ERR_BLOCKED_BY_RESPONSE).</p>
+                        <a
+                          href={activeServer.url}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="bg-blue-600 text-white px-4 py-2 rounded-lg text-xs font-bold"
+                        >
+                          Abrir en Navegador
+                        </a>
+                      </div>
                     ) : (
                       <iframe
                         src={activeServer.url}

@@ -5801,11 +5801,24 @@ const mapCustomAnime = (item: any): MappedAnime => {
   return mapped;
 };
 
+let mobileCustomAnimesCache: MappedAnime[] | null = null;
+let mobileCustomAnimesTime = 0;
+const MOBILE_CACHE_TTL = 30 * 60 * 1000;
+let mobileSummaryRowsCache: any[] | null = null;
+let mobileSummaryRowsTime = 0;
+const mobileServersCache = new Map<string, MappedServer[]>();
+
 export const api = {
-  // Get custom animes from Supabase
+  // Get custom animes from Supabase (Optimizado con caché y selección estricta)
   getCustomAnimes: async (includeSecret: boolean = false): Promise<MappedAnime[]> => {
+    const now = Date.now();
+    if (!includeSecret && mobileCustomAnimesCache && (now - mobileCustomAnimesTime < MOBILE_CACHE_TTL)) {
+      return mobileCustomAnimesCache;
+    }
     try {
-      let query = supabase.from('custom_animes').select('*').order('created_at', { ascending: false });
+      let query = supabase.from('custom_animes')
+        .select('id, title, original_title, image, banner_image, description, genres, score, status, content_type, total_episodes, is_movie, is_secret, is_custom, created_at')
+        .order('created_at', { ascending: false });
       if (!includeSecret) {
         query = query.or('is_secret.is.null,is_secret.eq.false');
       }
@@ -5813,6 +5826,10 @@ export const api = {
       if (error || !data) return [];
       const mapped = data.map(mapCustomAnime);
       mapped.forEach(cacheAnime);
+      if (!includeSecret) {
+        mobileCustomAnimesCache = mapped;
+        mobileCustomAnimesTime = now;
+      }
       return mapped;
     } catch (e) {
       console.error('Error fetching custom animes from supabase:', e);
@@ -5824,7 +5841,18 @@ export const api = {
   getCatalogAnimes: async (includeSecret: boolean = false): Promise<MappedAnime[]> => {
     const custom = await api.getCustomAnimes(includeSecret);
     try {
-      const { data: summaryRows } = await supabase.from('catalog_episodes_summary').select('*');
+      const now = Date.now();
+      let summaryRows = mobileSummaryRowsCache;
+      if (!summaryRows || (now - mobileSummaryRowsTime >= MOBILE_CACHE_TTL)) {
+        const { data } = await supabase
+          .from('catalog_episodes_summary')
+          .select('anime_tmdb_id, search_title, sample_episode_name, total_episodes, max_season, max_id');
+        if (Array.isArray(data) && data.length > 0) {
+          summaryRows = data;
+          mobileSummaryRowsCache = data;
+          mobileSummaryRowsTime = now;
+        }
+      }
       if (Array.isArray(summaryRows) && summaryRows.length > 0) {
         const customIds = new Set(custom.map(c => String(c.id).trim()));
         const customTitles = new Set(custom.map(c => (c.title || '').toLowerCase().trim()));
@@ -6332,12 +6360,17 @@ export const api = {
     try {
       const clean = animeTitle.trim().toLowerCase();
       const shortTitle = clean.split(/[:\-\(]/)[0].trim();
+      const cacheKey = `${animeId || clean}_e${episodeNum}_${language}`;
+      if (mobileServersCache.has(cacheKey)) {
+        return mobileServersCache.get(cacheKey)!;
+      }
       let matchedData: any[] = [];
+      const serverCols = 'id, server_name, language, video_url, skip_start, skip_end, outro_start, episode_number, season_number';
 
       // 1. Prioridad: Buscar por anime_tmdb_id si está provisto
       if (animeId) {
         const idStr = String(animeId).trim();
-        let q = supabase.from('anime_episodes').select('*').eq('anime_tmdb_id', idStr);
+        let q = supabase.from('anime_episodes').select(serverCols).eq('anime_tmdb_id', idStr);
         if (!idStr.startsWith('custom-')) {
           q = q.eq('episode_number', episodeNum);
         }
@@ -6346,7 +6379,7 @@ export const api = {
           matchedData = byId;
         } else if (!idStr.startsWith('custom-')) {
           // Si no encontró por episode_number estricto, buscar por anime_tmdb_id y filtrar
-          const { data: anyById } = await supabase.from('anime_episodes').select('*').eq('anime_tmdb_id', idStr);
+          const { data: anyById } = await supabase.from('anime_episodes').select(serverCols).eq('anime_tmdb_id', idStr);
           if (anyById && anyById.length > 0) {
             const epMatches = anyById.filter((e: any) => Number(e.episode_number) === Number(episodeNum));
             if (epMatches.length > 0) matchedData = epMatches;
@@ -6359,7 +6392,7 @@ export const api = {
       if (matchedData.length === 0 && clean) {
         const { data: byEpName } = await supabase
           .from('anime_episodes')
-          .select('*')
+          .select(serverCols)
           .ilike('episode_name', `%${clean}%`)
           .order('created_at', { ascending: false });
         if (byEpName && byEpName.length > 0) {
@@ -6371,7 +6404,7 @@ export const api = {
       if (matchedData.length === 0 && clean) {
         let query = supabase
           .from('anime_episodes')
-          .select('*')
+          .select(serverCols)
           .eq('episode_number', episodeNum)
           .order('created_at', { ascending: false });
 
@@ -6443,11 +6476,13 @@ export const api = {
 
         // Deduplicate URLs
         const seen = new Set<string>();
-        return servers.filter((s) => {
+        const finalServers = servers.filter((s) => {
           if (!s.url || seen.has(s.url)) return false;
           seen.add(s.url);
           return true;
         });
+        mobileServersCache.set(cacheKey, finalServers);
+        return finalServers;
       }
       return [];
     } catch (e) {
